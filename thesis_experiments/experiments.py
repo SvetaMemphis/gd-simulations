@@ -1754,37 +1754,40 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     save_rich_1d_path: str = "experiment_6e_rich_1d_no_collapse.png",
 ):
     """
-    Updated experiment 6e (with new dataset generation + extra plots/prints):
+    Experiment 6e (rewritten):
 
     Data generation (R^d):
       For each point:
         x_raw ~ Unif(B(0, radius)) in R^d
         y ∈ {-1,+1} uniform
         x = x_raw; x[0] += y
-      We TRAIN the current 1D network using x1 = x[0].
+      Train the 1D network on x1 = x[0].
 
     Pre-collapse:
       Train only (w,b); keep v fixed.
-      Stop pre-phase when loss < collapse_loss_threshold (or after max_pre_collapse_iters).
+      Stop when loss < collapse_loss_threshold (or after max_pre_collapse_iters).
 
-    Collapse:
-      Functional grouping (based on mean pre-activation on each class):
-        m_j^+ = mean(w_j x + b_j | y=+1)
-        m_j^- = mean(w_j x + b_j | y=-1)
+    Collapse (functional grouping):
+      Compute m_j^+ = mean(w_j x + b_j | y=+1), m_j^- analog.
       group+ if m_j^+ > m_j^- else group-.
-      Average w,b in each group -> 2-neuron network with v=[+1,-1].
-      Collapsed dataset is two instances: (-1,-1) and (1,1).
+
+      We PRINT collapsed (w,b) in two ways:
+        (A) using ALL neurons (including dead)
+        (B) using ONLY alive neurons (ignoring dead), where "dead" means never active on dataset.
+
+      Then we USE (B) as params_simple.
+
+      Collapsed dataset: (-1,-1) and (1,1).
 
     Tracking:
-      Track rich margin pre+post.
-      Track collapsed margin post (NaN pre).
-      Plot margins with a RED vertical line at collapse time.
+      Track rich margin pre+post; collapsed margin is NaN pre, tracked post.
+      Plot margins with a red vertical line at collapse time.
 
-    Extras requested:
-      1) Print neurons at init and at collapse + print sampled points (like debug).
-      2) Plot f_rich(x) and f_collapsed(x) at collapse.
-      3) Also plot f_rich(x) at collapse WITHOUT collapsing neurons (rich-only plot),
-         and print f_rich(center) on x=-1 and x=+1, plus number of zero crossings.
+    Extras:
+      - Print neurons at init and at collapse
+      - Print sampled points
+      - Plot f_rich(x) vs f_collapsed(x) at collapse
+      - Plot f_rich(x) at collapse without collapsing neurons + f(-1), f(1), zero crossings
     """
 
     import numpy as np
@@ -1825,7 +1828,10 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         print(f"k={params.k}")
         m = min(max_print, params.k)
         for j in range(m):
-            print(f"j={j:02d}: v={int(params.v[j]):+d}, w={float(params.w[j]): .6f}, b={float(params.b[j]): .6f}")
+            print(
+                f"j={j:02d}: v={int(params.v[j]):+d}, "
+                f"w={float(params.w[j]): .6f}, b={float(params.b[j]): .6f}"
+            )
         if m < params.k:
             print(f"... (printed first {m} of {params.k})")
         print("=========================\n")
@@ -1891,20 +1897,23 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         print(f"f_rich(-1)={f_m1:.6f}, f_rich(1)={f_p1:.6f}, zero_crossings={crossings}")
 
     # -------------------------------------------------
-    # 1) Initialization
+    # 1) Initialization (STANDARD He init for ReLU, 1D)
+    #   - w ~ N(0, 2/fan_in) with fan_in=1 => std=sqrt(2)
+    #   - b = 0 (standard practice)
     # -------------------------------------------------
     while True:
         v = rng.choice([-1.0, 1.0], size=k)
         if np.any(v == 1.0) and np.any(v == -1.0):
             break
 
-    std = float(np.sqrt(2.0))  # N(0,2)
-    w = rng.normal(0.0, std, size=k).astype(float)
-    b = rng.normal(0.0, std, size=k).astype(float)
+    fan_in = 1
+    w_std = float(np.sqrt(2.0 / fan_in))
+    w = rng.normal(0.0, w_std, size=k).astype(float)
+    b = np.zeros(k, dtype=float)
 
     params_rich = NetworkParams(w=w, b=b, v=v.astype(float))
 
-    print_neuron_params("Initialization (rich network)", params_rich, print_neurons)
+    print_neuron_params("Initialization (rich network) [He init]", params_rich, print_neurons)
 
     # -------------------------------------------------
     # 2) Data generation (new method) + print sampled points
@@ -1962,86 +1971,51 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     # Rich-only plot (no neuron collapse) at collapse time
     plot_rich_only_1d(params_rich, save_rich_1d_path)
 
-    # # -------------------------------------------------
-    # # 4) Functional collapse (group neurons by behavior)
-    # # -------------------------------------------------
-    # pos_mask = (y_rich > 0)
-    # neg_mask = (y_rich < 0)
-
-    # pre = params_rich.w[:, None] * x_rich[None, :] + params_rich.b[:, None]
-    # m_plus = pre[:, pos_mask].mean(axis=1)
-    # m_minus = pre[:, neg_mask].mean(axis=1)
-
-    # group_plus = np.where(m_plus > m_minus)[0]
-    # group_minus = np.where(m_plus <= m_minus)[0]
-
-    # print(f"Functional grouping sizes: |group_plus|={len(group_plus)}, |group_minus|={len(group_minus)}")
-
-    # if len(group_plus) == 0 or len(group_minus) == 0:
-    #     print("Degenerate grouping — forcing split by sign of v.")
-    #     group_plus = np.where(params_rich.v > 0)[0]
-    #     group_minus = np.where(params_rich.v < 0)[0]
-    #     print(f"Sign(v) grouping sizes: |group_plus|={len(group_plus)}, |group_minus|={len(group_minus)}")
-
-    # w_pos = float(params_rich.w[group_plus].mean())
-    # b_pos = float(params_rich.b[group_plus].mean())
-    # w_neg = float(params_rich.w[group_minus].mean())
-    # b_neg = float(params_rich.b[group_minus].mean())
-
-    # params_simple = NetworkParams(
-    #     w=np.array([w_pos, w_neg], dtype=float),
-    #     b=np.array([b_pos, b_neg], dtype=float),
-    #     v=np.array([1.0, -1.0], dtype=float),
-    # )
-
-    # print_neuron_params("Collapsed (simple) network parameters", params_simple, max_print=2)
-
-        # -------------------------------------------------
+    # -------------------------------------------------
     # 4) Functional collapse (compare with/without dead removal)
     # -------------------------------------------------
     pos_mask = (y_rich > 0)
     neg_mask = (y_rich < 0)
 
-    pre = params_rich.w[:, None] * x_rich[None, :] + params_rich.b[:, None]
+    pre = params_rich.w[:, None] * x_rich[None, :] + params_rich.b[:, None]  # (k,n)
 
-    # -------------------------------------------------
-    # Identify dead neurons
-    # Dead = never active on dataset (pre <= 0 everywhere)
-    # -------------------------------------------------
+    # Dead neuron = never active on dataset (pre <= 0 everywhere)
     alive_mask = np.any(pre > 0.0, axis=1)
     alive_idxs = np.where(alive_mask)[0]
     dead_idxs = np.where(~alive_mask)[0]
 
-    print(
-        f"\nDead neurons: {len(dead_idxs)} / {params_rich.k} "
-        f"(alive={len(alive_idxs)})"
-    )
+    print(f"Dead neurons: {len(dead_idxs)} / {params_rich.k} (alive={len(alive_idxs)})")
 
-    # =================================================
-    # (A) Collapse WITHOUT removing dead neurons
-    # =================================================
+    # --------------------------
+    # (A) Collapse using ALL neurons
+    # --------------------------
     m_plus_all = pre[:, pos_mask].mean(axis=1)
     m_minus_all = pre[:, neg_mask].mean(axis=1)
 
     group_plus_all = np.where(m_plus_all > m_minus_all)[0]
     group_minus_all = np.where(m_plus_all <= m_minus_all)[0]
 
-    w_pos_all = float(params_rich.w[group_plus_all].sum())
-    b_pos_all = float(params_rich.b[group_plus_all].sum())
-    w_neg_all = float(params_rich.w[group_minus_all].sum())
-    b_neg_all = float(params_rich.b[group_minus_all].sum())
+    if len(group_plus_all) == 0 or len(group_minus_all) == 0:
+        print("Degenerate grouping (all) — fallback split by sign(v).")
+        group_plus_all = np.where(params_rich.v > 0)[0]
+        group_minus_all = np.where(params_rich.v < 0)[0]
+
+    w_pos_all = float(params_rich.w[group_plus_all].mean())
+    b_pos_all = float(params_rich.b[group_plus_all].mean())
+    w_neg_all = float(params_rich.w[group_minus_all].mean())
+    b_neg_all = float(params_rich.b[group_minus_all].mean())
 
     print("\n=== Collapse WITHOUT removing dead neurons ===")
-    print(f"group_plus size = {len(group_plus_all)}")
-    print(f"group_minus size = {len(group_minus_all)}")
-    print(f"w_pos_all = {w_pos_all:.6f}, b_pos_all = {b_pos_all:.6f}")
-    print(f"w_neg_all = {w_neg_all:.6f}, b_neg_all = {b_neg_all:.6f}")
+    print(f"group_plus_all size  = {len(group_plus_all)}")
+    print(f"group_minus_all size = {len(group_minus_all)}")
+    print(f"(v=+1) w={w_pos_all:.6f}, b={b_pos_all:.6f}")
+    print(f"(v=-1) w={w_neg_all:.6f}, b={b_neg_all:.6f}")
 
-    # =================================================
-    # (B) Collapse WITH removing dead neurons
-    # =================================================
+    # --------------------------
+    # (B) Collapse using ONLY alive neurons (ignore dead)
+    # --------------------------
     if len(alive_idxs) == 0:
-        raise RuntimeError("All neurons are dead — cannot collapse.")
+        raise RuntimeError("All neurons are dead on the dataset — cannot collapse.")
 
     pre_alive = pre[alive_idxs, :]
     m_plus_alive = pre_alive[:, pos_mask].mean(axis=1)
@@ -2051,37 +2025,40 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     group_minus_alive = alive_idxs[np.where(m_plus_alive <= m_minus_alive)[0]]
 
     if len(group_plus_alive) == 0 or len(group_minus_alive) == 0:
-        print("Degenerate grouping (alive only) — fallback split.")
+        print("Degenerate grouping (alive) — fallback split by sign(v) among alive.")
+        group_plus_alive = alive_idxs[np.where(params_rich.v[alive_idxs] > 0)[0]]
+        group_minus_alive = alive_idxs[np.where(params_rich.v[alive_idxs] < 0)[0]]
+
+    if len(group_plus_alive) == 0 or len(group_minus_alive) == 0:
+        print("Still degenerate (alive) — splitting alive set in half as last resort.")
         mid = len(alive_idxs) // 2
         group_plus_alive = alive_idxs[:mid]
         group_minus_alive = alive_idxs[mid:]
 
-    w_pos_alive = float(params_rich.w[group_plus_alive].sum())
-    b_pos_alive = float(params_rich.b[group_plus_alive].sum())
-    w_neg_alive = float(params_rich.w[group_minus_alive].sum())
-    b_neg_alive = float(params_rich.b[group_minus_alive].sum())
+    if len(group_plus_alive) == 0 or len(group_minus_alive) == 0:
+        raise RuntimeError("Collapse failed: empty group after fallbacks.")
+
+    w_pos_alive = float(params_rich.w[group_plus_alive].mean())
+    b_pos_alive = float(params_rich.b[group_plus_alive].mean())
+    w_neg_alive = float(params_rich.w[group_minus_alive].mean())
+    b_neg_alive = float(params_rich.b[group_minus_alive].mean())
 
     print("\n=== Collapse WITH removing dead neurons ===")
-    print(f"group_plus size = {len(group_plus_alive)}")
-    print(f"group_minus size = {len(group_minus_alive)}")
-    print(f"w_pos_alive = {w_pos_alive:.6f}, b_pos_alive = {b_pos_alive:.6f}")
-    print(f"w_neg_alive = {w_neg_alive:.6f}, b_neg_alive = {b_neg_alive:.6f}")
+    print(f"group_plus_alive size  = {len(group_plus_alive)}")
+    print(f"group_minus_alive size = {len(group_minus_alive)}")
+    print(f"(v=+1) w={w_pos_alive:.6f}, b={b_pos_alive:.6f}")
+    print(f"(v=-1) w={w_neg_alive:.6f}, b={b_neg_alive:.6f}")
 
-    # =================================================
-    # Use the ALIVE version as the actual collapsed model
-    # =================================================
+    # Use alive-only collapse as the actual collapsed model
     params_simple = NetworkParams(
         w=np.array([w_pos_alive, w_neg_alive], dtype=float),
         b=np.array([b_pos_alive, b_neg_alive], dtype=float),
         v=np.array([1.0, -1.0], dtype=float),
     )
 
-    print_neuron_params(
-        "Collapsed (simple) network parameters (alive-only)",
-        params_simple,
-        max_print=2,
-    )
-    # collapsed dataset as pairs (-1,-1), (1,1)
+    print_neuron_params("Collapsed (simple) network parameters (alive-only)", params_simple, max_print=2)
+
+    # Collapsed dataset as pairs (-1,-1), (1,1)
     x_simple = np.array([-1.0, 1.0], dtype=float)
     y_simple = np.array([-1.0, 1.0], dtype=float)
 
@@ -2160,4 +2137,22 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         "save_rich_1d_path": save_rich_1d_path,
         "group_plus_size": int(len(group_plus_alive)),
         "group_minus_size": int(len(group_minus_alive)),
+        "dead_neurons": int(len(dead_idxs)),
+        "alive_neurons": int(len(alive_idxs)),
+        "collapse_all": {
+            "w_pos": float(w_pos_all),
+            "b_pos": float(b_pos_all),
+            "w_neg": float(w_neg_all),
+            "b_neg": float(b_neg_all),
+            "group_plus_size": int(len(group_plus_all)),
+            "group_minus_size": int(len(group_minus_all)),
+        },
+        "collapse_alive": {
+            "w_pos": float(w_pos_alive),
+            "b_pos": float(b_pos_alive),
+            "w_neg": float(w_neg_alive),
+            "b_neg": float(b_neg_alive),
+            "group_plus_size": int(len(group_plus_alive)),
+            "group_minus_size": int(len(group_minus_alive)),
+        },
     }
