@@ -1,25 +1,24 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-from .core_torch import ReLUNet1D, exponential_loss, forward_numpy, gd_step_wb_only, train_gd, get_device
+from .core_torch import (
+    ReLUNet1D,
+    exponential_loss,
+    forward_numpy,
+    gd_step_wb_only,
+    train_gd,
+    get_device,
+)
 from .datasets import create_dataset_symmetric_2point
 from .init_utils import init_5f_run, init_6e_rich_k20, init_experiment1_k2
 from .metrics import compute_margin, compute_margin_gap, find_decision_boundaries
 
-device = get_device()
-print("Using device:", device)
-
-model = init_experiment1_k2(...).to(device)
-
-x = torch.tensor(x_np, dtype=torch.float32, device=device)
-y = torch.tensor(y_np, dtype=torch.float32, device=device)
 
 def experiment_1_k2(
     num_iterations: int = 2000,
@@ -41,19 +40,24 @@ def experiment_1_k2(
     """
     print("\n=== Experiment 1 (PyTorch): k=2 ===")
 
-    # model = init_experiment1_k2(seed=seed, dtype=torch.float32)
-    model = init_experiment1_k2(
-    seed=seed,
-    dtype=torch.float32,
-    w1_init=w1_init,
-    b1_init=b1_init,
-    w2_init=w2_init,
-    b2_init=b2_init,
-)
-    x_np, y_np = create_dataset_symmetric_2point()
+    device = get_device()
+    print("Using device:", device)
 
-    x = torch.tensor(x_np, dtype=model.dtype)
-    y = torch.tensor(y_np, dtype=model.dtype)
+    # init model on CPU, then move to device
+    model = init_experiment1_k2(
+        seed=seed,
+        dtype=torch.float32,
+        w1_init=w1_init,
+        b1_init=b1_init,
+        w2_init=w2_init,
+        b2_init=b2_init,
+    ).to(device)
+
+    print(f"Init: w1={w1_init}, b1={b1_init}, w2={w2_init}, b2={b2_init}, v=[1,-1] fixed")
+
+    x_np, y_np = create_dataset_symmetric_2point()
+    x = torch.tensor(x_np, dtype=torch.float32, device=device)
+    y = torch.tensor(y_np, dtype=torch.float32, device=device)
 
     losses: List[float] = []
     boundary_counts: List[int] = []
@@ -62,7 +66,7 @@ def experiment_1_k2(
     optimal_margin = 1.0
 
     for t in range(num_iterations):
-        loss_t = gd_step_wb_only(model, x, y, learning_rate=learning_rate)
+        loss_t = gd_step_wb_only(model, x, y, learning_rate=float(learning_rate))
         losses.append(loss_t)
 
         bc = len(find_decision_boundaries(model, x_range=x_range))
@@ -134,16 +138,16 @@ def experiment_1_k2(
     axes[1, 0].legend()
     axes[1, 0].grid(True)
 
-    # parameter evolution not tracked here; show w,b as constants at end
     axes[1, 1].axis("off")
     axes[1, 1].text(
-        0.05, 0.95,
+        0.05,
+        0.95,
         f"Final parameters:\n"
         f"w={model.w.detach().cpu().numpy()}\n"
         f"b={model.b.detach().cpu().numpy()}\n"
         f"v={model.v.detach().cpu().numpy()}",
         va="top",
-        family="monospace"
+        family="monospace",
     )
 
     plt.tight_layout()
@@ -171,34 +175,34 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 ) -> None:
     """
     Exp 5f (PyTorch) — PRINTS EVERY RUN.
+    Note: printing every run for large num_runs will be extremely verbose.
     """
-
     print("\n=== Experiment 5f (PyTorch) ===")
     print(f"num_runs={num_runs}, max_iterations={max_iterations}, lr={learning_rate}")
     print(f"condition: |w1+b1+w2-b2|<{tol} AND loss<{loss_threshold}")
     print("abort: if t==10000 and loss>=loss_threshold")
 
+    device = get_device()
+    print("Using device:", device)
+
     rng = np.random.default_rng(seed)
     x_np, y_np = create_dataset_symmetric_2point()
-    x_t = torch.tensor(x_np, dtype=torch.float32)
-    y_t = torch.tensor(y_np, dtype=torch.float32)
-
-    hit_times = np.full(num_runs, -1, dtype=int)
-    metric_values: List[float] = []
+    x_t = torch.tensor(x_np, dtype=torch.float32, device=device)
+    y_t = torch.tensor(y_np, dtype=torch.float32, device=device)
 
     count_hit = 0
     count_loss_abort = 0
     count_max_iterations = 0
 
     for r in range(num_runs):
-
         print("\n" + "=" * 60)
         print(f"RUN {r+1}/{num_runs}")
         print("=" * 60)
 
         model, w1_0, b1_0, w2_0, b2_0 = init_5f_run(rng, dtype=torch.float32)
+        model = model.to(device)
 
-        print(f"Init:")
+        print("Init:")
         print(f"  w1_0={w1_0:.6f}, b1_0={b1_0:.6f}")
         print(f"  w2_0={w2_0:.6f}, b2_0={b2_0:.6f}")
 
@@ -208,35 +212,27 @@ def experiment_5f_hit_linear_condition_with_low_loss(
         expr_last = None
 
         while t <= max_iterations:
-
             with torch.no_grad():
                 preds = model(x_t)
-                loss_t = float(exponential_loss(y_t, preds).cpu().item())
+                loss_t = float(exponential_loss(y_t, preds).detach().cpu().item())
 
-                w1 = float(model.w[0].cpu().item())
-                b1 = float(model.b[0].cpu().item())
-                w2 = float(model.w[1].cpu().item())
-                b2 = float(model.b[1].cpu().item())
-
+                w1 = float(model.w[0].detach().cpu().item())
+                b1 = float(model.b[0].detach().cpu().item())
+                w2 = float(model.w[1].detach().cpu().item())
+                b2 = float(model.b[1].detach().cpu().item())
                 expr_t = abs(w1 + b1 + w2 - b2)
 
             loss_last = loss_t
             expr_last = expr_t
 
-            # abort rule
             if t == 10000 and not (loss_t < loss_threshold):
                 stop_reason = "loss-abort"
                 count_loss_abort += 1
                 break
 
-            # success condition
             if loss_t < loss_threshold and expr_t < tol:
-                hit_times[r] = t
                 stop_reason = "hit"
                 count_hit += 1
-
-                metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
-                metric_values.append(float(metric_min))
                 break
 
             if t == max_iterations:
@@ -251,10 +247,9 @@ def experiment_5f_hit_linear_condition_with_low_loss(
         print(f"Iterations: {t}")
         print(f"Final loss: {loss_last:.6e}")
         print(f"Final |w1+b1+w2-b2|: {expr_last:.6e}")
-
-        print(f"Final params:")
-        print(f"  w1={model.w[0].item():.6f}, b1={model.b[0].item():.6f}")
-        print(f"  w2={model.w[1].item():.6f}, b2={model.b[1].item():.6f}")
+        print("Final params:")
+        print(f"  w1={float(model.w[0].detach().cpu().item()):.6f}, b1={float(model.b[0].detach().cpu().item()):.6f}")
+        print(f"  w2={float(model.w[1].detach().cpu().item()):.6f}, b2={float(model.b[1].detach().cpu().item()):.6f}")
 
     print("\n" + "=" * 60)
     print("SUMMARY")
@@ -262,6 +257,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
     print(f"Hit: {count_hit}/{num_runs}")
     print(f"Failed (loss-abort): {count_loss_abort}/{num_runs}")
     print(f"Failed (max-iterations): {count_max_iterations}/{num_runs}")
+
 
 def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     k: int = 20,
@@ -281,13 +277,13 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     save_rich_1d_path: str = "experiment_6e_rich_1d_no_collapse.png",
 ) -> Dict[str, object]:
     """
-    Exp 6e (PyTorch):
+    Exp 6e (PyTorch, GPU-ready on Apple MPS):
       - init k=20, v in {-1,+1} fixed, w,b ~ N(0,2)
       - data: x_raw ~ Unif(B(0,radius)) in R^d, y ∈ {-1,+1}, then x[0]+=y
       - TRAIN using only x1 = x[0] with the 1D network, update w,b only
       - pre-collapse stops when loss < collapse_loss_threshold (or max_pre_collapse_iters)
       - collapse by behavior on dataset; remove dead neurons; group by m_plus>m_minus
-      - IMPORTANT: collapse uses SUMS of w,b in each group (like your latest code variant)
+      - IMPORTANT: collapse uses SUMS of w,b in each group
       - compare margins pre+post rich vs collapsed
       - save:
           save_rich_1d_path
@@ -297,10 +293,23 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     print("\n=== Experiment 6e (PyTorch) ===")
     print(f"k={k}, d={d}, n={n}, radius={radius}, lr={learning_rate}")
 
-    rng = np.random.default_rng(seed)
-    model_rich = init_6e_rich_k20(rng, k=k, dtype=torch.float32)
+    device = get_device()
+    print("Using device:", device)
 
-    # sample uniform from d-ball
+    # Helper: forward_numpy() relies on model.device in your core_torch.py.
+    # After .to(device), we must update model.device to match.
+    def _sync_model_device(model: ReLUNet1D, dev: torch.device) -> ReLUNet1D:
+        model = model.to(dev)
+        model.device = dev  # IMPORTANT for forward_numpy()
+        return model
+
+    rng = np.random.default_rng(seed)
+
+    # --- init rich model on device ---
+    model_rich = init_6e_rich_k20(rng, k=k, dtype=torch.float32)
+    model_rich = _sync_model_device(model_rich, device)
+
+    # --- sample uniform from d-ball ---
     def sample_uniform_ball(d_: int, R_: float) -> np.ndarray:
         u = rng.normal(size=d_)
         u /= (np.linalg.norm(u) + 1e-12)
@@ -316,12 +325,10 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         x[0] += y_full[i]
         X_full[i] = x
 
-    # print sample points
+    # --- show sample points ---
     def show_point(vec: np.ndarray) -> str:
         head = ", ".join(f"{vec[j]: .4f}" for j in range(min(6, vec.shape[0])))
-        if vec.shape[0] > 6:
-            return "[" + head + ", ...]"
-        return "[" + head + "]"
+        return "[" + head + (", ...]" if vec.shape[0] > 6 else "]")
 
     neg_idxs = np.where(y_full < 0)[0]
     pos_idxs = np.where(y_full > 0)[0]
@@ -337,14 +344,14 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         idx = int(pos_idxs[i])
         print(f"  {i:02d}: x={show_point(X_full[idx])}")
 
-    # train on x1
+    # --- train on x1 only ---
     x_rich_np = X_full[:, 0].astype(float)
     y_rich_np = y_full.astype(float)
 
-    x_rich = torch.tensor(x_rich_np, dtype=torch.float32)
-    y_rich = torch.tensor(y_rich_np, dtype=torch.float32)
+    x_rich = torch.tensor(x_rich_np, dtype=torch.float32, device=device)
+    y_rich = torch.tensor(y_rich_np, dtype=torch.float32, device=device)
 
-    def print_neurons(title: str, model: ReLUNet1D, max_print: int):
+    def print_neurons_fn(title: str, model: ReLUNet1D, max_print: int):
         print(f"\n=== {title} ===")
         m = min(max_print, model.k)
         v = model.v.detach().cpu().numpy()
@@ -356,9 +363,9 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
             print(f"... (printed first {m} of {model.k})")
         print("=========================")
 
-    print_neurons("Initialization (rich)", model_rich, print_neurons)
+    print_neurons_fn("Initialization (rich)", model_rich, print_neurons)
 
-    # tracking
+    # --- tracking arrays ---
     t_all: List[int] = [0]
     margin_rich_all: List[float] = [float(compute_margin(model_rich, x_rich_np, y_rich_np, x_range=(-2, 2)))]
     margin_simple_all: List[float] = [float("nan")]
@@ -366,7 +373,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     t_collapse = None
     loss_at_collapse = None
 
-    # pre-collapse train (w,b only)
+    # --- pre-collapse train (w,b only) ---
     for t in range(1, max_pre_collapse_iters + 1):
         loss_t = gd_step_wb_only(model_rich, x_rich, y_rich, learning_rate=float(learning_rate))
 
@@ -387,14 +394,13 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         t_collapse = max_pre_collapse_iters
         with torch.no_grad():
             preds = model_rich(x_rich)
-            loss_at_collapse = float(exponential_loss(y_rich, preds).cpu().item())
+            loss_at_collapse = float(exponential_loss(y_rich, preds).detach().cpu().item())
         print("WARNING: Did not reach collapse_loss_threshold within max_pre_collapse_iters.")
 
     print(f"\n*** COLLAPSE at t={t_collapse} (loss={loss_at_collapse:.6e}) ***")
+    print_neurons_fn("Rich params at collapse", model_rich, print_neurons)
 
-    print_neurons("Rich params at collapse", model_rich, print_neurons)
-
-    # rich-only function plot + center values + zero crossings
+    # --- rich-only function plot (no collapse) ---
     def count_zero_crossings(model: ReLUNet1D, x_min=-2.0, x_max=2.0, num=6000) -> int:
         xg = np.linspace(x_min, x_max, num)
         fg = forward_numpy(model, xg)
@@ -423,7 +429,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     print(f"Saved rich-only plot: {save_rich_1d_path}")
     print(f"f_rich(-1)={f_m1:.6f}, f_rich(1)={f_p1:.6f}, zero_crossings={crossings}")
 
-    # collapse
+    # --- collapse ---
     with torch.no_grad():
         pre = model_rich.w[:, None] * x_rich[None, :] + model_rich.b[:, None]  # (k,n)
         pre_np = pre.detach().cpu().numpy()
@@ -473,14 +479,15 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         freeze_v=True,
         dtype=torch.float32,
     )
+    model_simple = _sync_model_device(model_simple, device)
 
     x_simple_np = np.array([-1.0, 1.0], dtype=float)
     y_simple_np = np.array([-1.0, 1.0], dtype=float)
 
-    x_simple = torch.tensor(x_simple_np, dtype=torch.float32)
-    y_simple = torch.tensor(y_simple_np, dtype=torch.float32)
+    x_simple = torch.tensor(x_simple_np, dtype=torch.float32, device=device)
+    y_simple = torch.tensor(y_simple_np, dtype=torch.float32, device=device)
 
-    # plot functions at collapse
+    # --- plot functions at collapse ---
     x_plot = np.linspace(-2.0, 2.0, 800)
     f_rich_c = forward_numpy(model_rich, x_plot)
     f_simp_c = forward_numpy(model_simple, x_plot)
@@ -499,7 +506,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     plt.close()
     print(f"Saved function-at-collapse plot: {save_function_at_collapse_path}")
 
-    # ensure we have a margin value for collapsed at t_collapse
+    # --- ensure margin_simple at collapse time ---
     if t_all[-1] != t_collapse:
         t_all.append(int(t_collapse))
         margin_rich_all.append(float(compute_margin(model_rich, x_rich_np, y_rich_np, x_range=(-2, 2))))
@@ -507,7 +514,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     else:
         margin_simple_all[-1] = float(compute_margin(model_simple, x_simple_np, y_simple_np, x_range=(-2, 2)))
 
-    # post-collapse train both (w,b only)
+    # --- post-collapse train both (w,b only) ---
     for s in range(1, post_collapse_iters + 1):
         _ = gd_step_wb_only(model_rich, x_rich, y_rich, learning_rate=float(learning_rate))
         _ = gd_step_wb_only(model_simple, x_simple, y_simple, learning_rate=float(learning_rate))
@@ -517,7 +524,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
             margin_rich_all.append(float(compute_margin(model_rich, x_rich_np, y_rich_np, x_range=(-2, 2))))
             margin_simple_all.append(float(compute_margin(model_simple, x_simple_np, y_simple_np, x_range=(-2, 2))))
 
-    # margin plot
+    # --- margin plot ---
     plt.figure(figsize=(10, 6))
     plt.plot(t_all, margin_rich_all, label="Rich margin (k=20)")
     plt.plot(t_all, margin_simple_all, label="Collapsed margin (k=2)")
