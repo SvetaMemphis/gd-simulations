@@ -2,7 +2,8 @@
 Example script demonstrating how to control initial weights, including w_j = +1/-1.
 """
 
-from main import initialize_network, print_initial_params, get_theta_vector, train_gd, create_dataset
+from main import (initialize_network, print_initial_params, get_theta_vector, 
+                  train_gd, create_dataset, compute_margin, compute_margin_gap)
 import numpy as np
 
 print("=" * 70)
@@ -48,19 +49,33 @@ params5 = initialize_network(k=3, w_binary=[1, -1, 1], v_binary=True, seed=42)
 print_initial_params(params5, "Before training")
 
 x, y = create_dataset(symmetric=True)
-params_history, losses, boundary_counts = train_gd(
-    params5, x, y, learning_rate=0.01, num_iterations=100, track_boundaries=True
+params_history, losses, boundary_counts, margins, margin_gaps = train_gd(
+    params5, x, y, learning_rate=0.01, num_iterations=100, 
+    track_boundaries=True, track_margin=True, optimal_margin=1.0
 )
 
 print(f"\nAfter {len(losses)} iterations:")
 print(f"  Final loss: {losses[-1]:.6f}")
 print(f"  Final boundaries: {boundary_counts[-1]}")
+if margins:
+    print(f"  Final margin: {margins[-1]:.6f}")
+    print(f"  Final margin gap: {margin_gaps[-1]:.6f}")
 print_initial_params(params_history[-1], "After training")
 
 # Show Theta evolution
 print(f"\nTheta norm evolution:")
 print(f"  Initial ||Theta|| = {np.linalg.norm(get_theta_vector(params5)):.6f}")
 print(f"  Final ||Theta|| = {np.linalg.norm(get_theta_vector(params_history[-1])):.6f}")
+
+# Example 6: Margin computation
+print("\n" + "-" * 70)
+print("Example 6: Computing margin directly")
+print("-" * 70)
+margin = compute_margin(params_history[-1], x, y)
+margin_gap = compute_margin_gap(params_history[-1], x, y, optimal_margin=1.0)
+print(f"  Margin: {margin:.6f}")
+print(f"  Margin gap: {margin_gap:.6f}")
+print(f"  Optimal margin: 1.0")
 
 print("\n" + "=" * 70)
 print("Summary:")
@@ -82,4 +97,14 @@ To control initial weights Theta:
 
 5. Print parameters:
    print_initial_params(params)
+
+6. Track margin during training:
+   params_history, losses, _, margins, margin_gaps = train_gd(
+       params, x, y, learning_rate, num_iterations,
+       track_margin=True, optimal_margin=1.0
+   )
+
+7. Compute margin directly:
+   margin = compute_margin(params, x, y)
+   margin_gap = compute_margin_gap(params, x, y, optimal_margin=1.0)
 """)

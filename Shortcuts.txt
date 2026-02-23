@@ -1,0 +1,47 @@
+Over-parameterized regime. (2-5-10-20 width)
+
+python main.py --experiment 1 --k 2 --iterations 100000
+python main.py --experiment 1 --k 3 --iterations 100000
+python main.py --experiment 1 --k 5 --iterations 10000
+python main.py --experiment 1 --k 10 --iterations 10000
+python main.py --experiment 1 --k 20 --iterations 10000
+
+
+python main.py --experiment 1 --k 2 --init-type thesis --w1-init 1 --b1-init 1 --M 1 --iterations 10000
+
+
+Robust training 
+python main.py --experiment 3 --iterations 10000
+python main.py --experiment 3 --iterations 10000 --k 2 --M 3
+
+
+Run a general two-neuron simulation tracking the margin from random initializations and aggregate the number of iterations it takes to achieve margin < gamma and training loss < epsilon (since we might even start at zero margin but drift away according to Guy's example).
+
+    Potential value to test one: gamma (desired margin), start with 0.01--0.1, tweak depending on run time.
+    epsilon (desired training loss): 0.001--0.01?
+
+
+python main.py --experiment 5c \
+    --k 2 \
+    --iterations 20000 \
+    --num-runs 100 \
+    --delta 0.01 \
+    --epsilon 0.01
+
+
+python main.py --experiment 5c \
+  --k 2 \ 
+  --iterations 50000 \
+  --delta 0.1 \
+  --epsilon 0.5 \
+  --learning-rate 0.05
+
+
+
+  1. More general setting -- data with 2 clusters and 
+
+  b1=b2=0
+  w1=1
+  w2=-5 // as much as it larger the drift is higher
+
+  check if active on both points if this computed on both
