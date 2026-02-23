@@ -1,24 +1,18 @@
 """
-Thin entrypoint + compatibility layer.
+Thin entrypoint.
 
-- Running from terminal:
-    python main.py --help
-    python main.py --experiment 1
-
-- Importing (backwards compatible with previous `from main import ...`):
-    from main import experiment_1_arbitrary_neurons
+Run:
+  python main.py --help
+  python main.py --experiment 1 --k 2
+  python main.py --experiment 5f
+  python main.py --experiment 6e
 """
-
 
 def _run_cli() -> None:
     from thesis_experiments.cli import main as cli_main
-
     cli_main()
-
 
 if __name__ == "__main__":
     _run_cli()
 else:
-    # Re-export API for notebooks/scripts that do `from main import *`
     from thesis_experiments.api import *  # noqa: F401,F403
-

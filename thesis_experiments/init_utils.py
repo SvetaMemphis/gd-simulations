@@ -1,108 +1,78 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
 import numpy as np
-from typing import List, Optional
+import torch
 
-from .core import NetworkParams
-
-
-def get_theta_vector(params: NetworkParams) -> np.ndarray:
-    """Theta = [w_1..w_k, b_1..b_k, v_1..v_k]."""
-    return np.concatenate([params.w, params.b, params.v])
+from .core_torch import ReLUNet1D
 
 
-def print_initial_params(params: NetworkParams, title: str = "Initial Parameters") -> None:
-    print(f"\n{title}:")
-    print(f"  Number of neurons (k): {params.k}")
-    print(f"  w = {params.w}")
-    print(f"  b = {params.b}")
-    print(f"  v = {params.v}")
-    theta = get_theta_vector(params)
-    print(f"  Theta (parameter vector) = {theta}")
-    print(f"  ||Theta|| = {np.linalg.norm(theta):.6f}")
-
-
-def initialize_network(
-    k: int,
-    init_type: str = "random",
-    w1_init: Optional[float] = None,
-    b1_init: Optional[float] = None,
-    w2_init: Optional[float] = None,
-    b2_init: Optional[float] = None,
-    M: Optional[float] = None,
-    seed: Optional[int] = None,
-    w_init: Optional[np.ndarray] = None,
-    b_init: Optional[np.ndarray] = None,
-    v_init: Optional[np.ndarray] = None,
-    w_binary: Optional[List[int]] = None,
-    b_scale: float = 0.1,
-    v_binary: bool = False,
-) -> NetworkParams:
+def init_experiment1_k2(
+    seed: int = 42,
+    dtype: torch.dtype = torch.float32,
+    w1_init: float = 1.0,
+    b1_init: float = 1.0,
+    w2_init: float = -10.0,
+    b2_init: float = 10.0,
+) -> ReLUNet1D:
     """
-    Initialization helper.
-
-    init_type:
-      - random, symmetric, thesis (k=2), binary
-    Or pass explicit arrays via w_init/b_init/v_init.
+    Experiment 1 (k=2) thesis-style:
+      v fixed = [1, -1]
+      allow user-defined init for (w1,b1,w2,b2)
     """
-    if seed is not None:
-        np.random.seed(seed)
+    # seed currently not used for deterministic init, but kept for API symmetry
+    _ = seed
 
-    # Explicit arrays override init_type.
-    if w_init is not None or b_init is not None or v_init is not None:
-        if w_init is None:
-            w_init = np.random.randn(k) * 0.5
-        if b_init is None:
-            b_init = np.random.randn(k) * 0.5
-        if v_init is None:
-            v_init = np.random.choice([-1, 1], size=k) * np.random.rand(k)
-        assert len(w_init) == k and len(b_init) == k and len(v_init) == k
-        return NetworkParams(w=np.array(w_init), b=np.array(b_init), v=np.array(v_init))
+    w = np.array([w1_init, w2_init], dtype=float)
+    b = np.array([b1_init, b2_init], dtype=float)
+    v = np.array([1.0, -1.0], dtype=float)
 
-    # Explicit ±1 pattern for w.
-    if w_binary is not None:
-        assert len(w_binary) == k
-        w = np.array(w_binary, dtype=float)
-        b = np.random.randn(k) * b_scale
-        v = np.random.choice([-1, 1], size=k) if v_binary else np.random.choice([-1, 1], size=k) * np.random.rand(k)
-        return NetworkParams(w=w, b=b, v=v.astype(float))
+    model = ReLUNet1D(k=2, w_init=w, b_init=b, v_init=v, freeze_v=True, dtype=dtype)
+    return model
 
-    if init_type == "thesis" and k == 2:
-        if w1_init is None:
-            w1_init = 1.0
-        if b1_init is None:
-            b1_init = 1.0
+def init_5f_run(
+    rng: np.random.Generator,
+    dtype: torch.dtype = torch.float32,
+) -> Tuple[ReLUNet1D, float, float, float, float]:
+    """
+    Exp 5f init:
+      w ~ N(0,2), b=0, v=[1,-1] fixed.
+    Returns (model, w1_0,b1_0,w2_0,b2_0)
+    """
+    std = float(np.sqrt(2.0))  # N(0,2)
+    w1_0 = float(rng.normal(0.0, std))
+    w2_0 = float(rng.normal(0.0, std))
+    b1_0 = float(rng.normal(0.0, std))
+    b2_0 = float(rng.normal(0.0, std))
 
-        if w2_init is not None and b2_init is not None:
-            w2 = w2_init
-            b2 = b2_init
-        else:
-            if M is None:
-                M = 10.0
-            w2 = -M
-            b2 = M
+    w = np.array([w1_0, w2_0], dtype=float)
+    b = np.array([b1_0, b2_0], dtype=float)
+    v = np.array([1.0, -1.0], dtype=float)
 
-        return NetworkParams(
-            w=np.array([w1_init, w2], dtype=float),
-            b=np.array([b1_init, b2], dtype=float),
-            v=np.array([1.0, -1.0], dtype=float),
-        )
+    model = ReLUNet1D(k=2, w_init=w, b_init=b, v_init=v, freeze_v=True, dtype=dtype)
+    return model, w1_0, b1_0, w2_0, b2_0
 
-    if init_type == "binary":
-        w = np.random.choice([-1, 1], size=k).astype(float)
-        b = (np.random.randn(k) * b_scale).astype(float)
-        v = np.random.choice([-1, 1], size=k).astype(float) if v_binary else (np.random.choice([-1, 1], size=k) * np.random.rand(k)).astype(float)
-        return NetworkParams(w=w, b=b, v=v)
 
-    if init_type == "symmetric":
-        return NetworkParams(
-            w=(np.random.randn(k) * 0.1).astype(float),
-            b=(np.random.randn(k) * 0.1).astype(float),
-            v=np.random.choice([-1, 1], size=k).astype(float),
-        )
+def init_6e_rich_k20(
+    rng: np.random.Generator,
+    k: int = 20,
+    dtype: torch.dtype = torch.float32,
+) -> ReLUNet1D:
+    """
+    Exp 6e rich init:
+      v_j ∈ {-1, +1} (ensure both signs), fixed
+      w,b ~ N(0,2)
+    """
+    while True:
+        v = rng.choice([-1.0, 1.0], size=k).astype(float)
+        if np.any(v > 0) and np.any(v < 0):
+            break
 
-    # random
-    return NetworkParams(
-        w=(np.random.randn(k) * 0.5).astype(float),
-        b=(np.random.randn(k) * 0.5).astype(float),
-        v=(np.random.choice([-1, 1], size=k) * np.random.rand(k)).astype(float),
-    )
+    std = float(np.sqrt(2.0))
+    w = rng.normal(0.0, std, size=k).astype(float)
+    b = rng.normal(0.0, std, size=k).astype(float)
 
+    model = ReLUNet1D(k=k, w_init=w, b_init=b, v_init=v, freeze_v=True, dtype=dtype)
+    return model

@@ -1,21 +1,23 @@
-import numpy as np
+from __future__ import annotations
+
 from typing import List, Optional, Tuple
 
-from .core import NetworkParams, network_forward
+import numpy as np
+
+from .core_torch import ReLUNet1D, forward_numpy
 
 
 def find_decision_boundaries(
-    params: NetworkParams,
+    model: ReLUNet1D,
     x_range: Tuple[float, float] = (-10, 10),
-    resolution: int = 10000,
+    resolution: int = 20000,
 ) -> List[float]:
     """
-    Find x where Phi(x)=0 by scanning a grid and detecting sign changes.
+    Find x where f(x)=0 by scanning a grid and detecting sign changes.
     """
-    x_vals = np.linspace(x_range[0], x_range[1], resolution)
-    outputs = network_forward(params, x_vals)
+    x_vals = np.linspace(x_range[0], x_range[1], int(resolution), dtype=float)
+    outputs = forward_numpy(model, x_vals)
 
-    # Potential overflow if outputs are huge; still fine for sign-change detection.
     sign_changes = np.where((outputs[:-1] * outputs[1:]) <= 0)[0]
 
     boundaries: List[float] = []
@@ -32,44 +34,46 @@ def find_decision_boundaries(
 
 
 def compute_margin(
-    params: NetworkParams,
+    model: ReLUNet1D,
     x: np.ndarray,
     y: np.ndarray,
-    resolution: int = 10000,
+    resolution: int = 20000,
     x_range: Tuple[float, float] = (-10, 10),
 ) -> float:
     """
-    1D margin: min_i distance from x_i to the closest decision boundary, if correctly classified.
-    If any point is misclassified -> margin 0. If no boundary exists but all correct -> inf.
+    1D margin: min_i distance from x_i to closest decision boundary, if correctly classified.
+    If any point misclassified -> margin 0. If no boundary but all correct -> inf.
     """
     x = np.asarray(x).reshape(-1)
     y = np.asarray(y).reshape(-1)
 
-    preds = np.sign(network_forward(params, x))
+    preds = np.sign(forward_numpy(model, x))
+    # treat exact zero as correct only if y=0 (not our case), so set zeros to +1
+    preds[preds == 0] = 1.0
+
     if not np.all(preds == y):
         return 0.0
 
-    boundaries = find_decision_boundaries(params, x_range=x_range, resolution=resolution)
+    boundaries = find_decision_boundaries(model, x_range=x_range, resolution=resolution)
     if len(boundaries) == 0:
         return float("inf")
 
-    b = np.asarray(boundaries)[None, :]  # (1, nb)
-    dist = np.abs(x[:, None] - b)  # (n, nb)
+    b = np.asarray(boundaries)[None, :]
+    dist = np.abs(x[:, None] - b)
     return float(np.min(np.min(dist, axis=1)))
 
 
 def compute_margin_gap(
-    params: NetworkParams,
+    model: ReLUNet1D,
     x: np.ndarray,
     y: np.ndarray,
     optimal_margin: float = 1.0,
     margin: Optional[float] = None,
-    resolution: int = 10000,
+    resolution: int = 20000,
     x_range: Tuple[float, float] = (-10, 10),
 ) -> float:
     if margin is None:
-        margin = compute_margin(params, x, y, resolution=resolution, x_range=x_range)
+        margin = compute_margin(model, x, y, resolution=resolution, x_range=x_range)
     if margin == float("inf"):
         return 0.0
     return max(0.0, float(optimal_margin - margin))
-
