@@ -3,9 +3,10 @@ import matplotlib.pyplot as plt
 from typing import List, Tuple
 import csv
 
-from .core import network_forward, train_gd, exponential_loss, gradient_descent_step
+from .core import network_forward, train_gd, exponential_loss, gradient_descent_step, NetworkParams, compute_gradients
 from .datasets import create_dataset
 from .init_utils import initialize_network, print_initial_params
+from .metrics import compute_margin
 
 
 def experiment_1_arbitrary_neurons(
@@ -1286,3 +1287,877 @@ def experiment_5f_hit_linear_condition_with_low_loss(
     if hist2_counts is not None:
         print(" - experiment_5f_metric_hist.png")
         print(" - experiment_5f_metric_hist.csv")
+
+
+# def experiment_6e_overparam_cluster_then_collapse_compare_margins(
+#     k: int = 20,
+#     d: int = 50,
+#     n: int = 1000,
+#     radius: float = 0.5,
+#     learning_rate: float = 0.01,
+#     max_pre_collapse_iters: int = 1_000_000,
+#     post_collapse_iters: int = 1_000_000,
+#     activation_frac: float = 0.99,
+#     seed: int = 42,
+#     track_every: int = 100,
+#     save_margins_path: str = "experiment_6e_margins.png",
+#     save_neurons_path: str = "experiment_6e_neurons.png",
+# ):
+#     """
+#     Updated Spec (with new dataset generation):
+
+#     1) Init network with k=20 neurons.
+#        v_j ∈ {-1,1}, ensure at least one +1 and at least one -1.
+#        w_j,b_j ~ N(0,2).
+
+#     2) Data (n points in R^d):
+#        For each i:
+#          - sample x_raw ~ Unif(B(0, radius)) in R^d
+#          - sample y_i ∈ {-1,+1} uniformly
+#          - set x_i = x_raw; x_i[0] += y_i
+#        NOTE: the current network code is 1D (uses scalar x), so we feed only x_i[0] (projection).
+
+#     3) Train (ONLY w,b; v fixed) until each neuron is active on the correct cluster points
+#        (measured by fraction >= activation_frac for each neuron), where:
+#          if v_j=+1: active on y=+1 points, inactive on y=-1 points
+#          if v_j=-1: active on y=-1 points, inactive on y=+1 points
+
+#     4) Collapse:
+#        - group neurons by sign(v): v=+1 group and v=-1 group
+#        - average w and b within each group -> 2-neuron network with v=[+1,-1]
+#        - collapse data to two instances: (x,y) = (1,1) and (-1,-1)
+
+#     5) Continue training both (rich vs collapsed) and plot margins on same chart.
+#        Also saves a chart of (w_j,b_j) for all neurons + collapsed ones and their lines.
+#     """
+
+#     rng = np.random.default_rng(seed)
+
+#     # ----------------------------
+#     # Helper: sample uniformly from a d-dim ball of radius R
+#     # ----------------------------
+#     def sample_uniform_ball(rng: np.random.Generator, d: int, R: float) -> np.ndarray:
+#         u = rng.normal(size=d)
+#         u /= (np.linalg.norm(u) + 1e-12)
+#         r = R * (rng.uniform() ** (1.0 / d))
+#         return r * u
+
+#     # ----------------------------
+#     # Helper: GD step updating only w,b (keep v fixed)
+#     # ----------------------------
+#     def gd_step_wb_only(params: NetworkParams, x: np.ndarray, y: np.ndarray, lr: float):
+#         grads = compute_gradients(params, x, y)
+#         new_params = NetworkParams(
+#             w=params.w - lr * grads.w,
+#             b=params.b - lr * grads.b,
+#             v=params.v.copy(),  # freeze v
+#         )
+#         loss = float(exponential_loss(y, network_forward(new_params, x)))
+#         return new_params, loss
+
+#     # ----------------------------
+#     # 1) Initialization
+#     # ----------------------------
+#     while True:
+#         v = rng.choice([-1.0, 1.0], size=k)
+#         if np.any(v == 1.0) and np.any(v == -1.0):
+#             break
+
+#     std = float(np.sqrt(2.0))  # N(0,2) => std=sqrt(2)
+#     w = rng.normal(0.0, std, size=k).astype(float)
+#     b = rng.normal(0.0, std, size=k).astype(float)
+
+#     params_rich = NetworkParams(w=w, b=b, v=v.astype(float))
+
+#     print("\n=== Initialization (rich network) ===")
+#     print(f"k={k}, n={n}, d={d}, radius={radius}, lr={learning_rate}")
+#     print(f"#(v=+1)={int((params_rich.v > 0).sum())}, #(v=-1)={int((params_rich.v < 0).sum())}")
+#     print("v:", np.array2string(params_rich.v, precision=0))
+#     print("w (first 10):", np.array2string(params_rich.w[:10], precision=4))
+#     print("b (first 10):", np.array2string(params_rich.b[:10], precision=4))
+#     print("====================================\n")
+
+#     # ----------------------------
+#     # 2) Data generation (new method), then project to 1D (first coordinate)
+#     # ----------------------------
+#     X_full = np.zeros((n, d), dtype=float)
+#     y_rich = rng.choice([-1.0, 1.0], size=n).astype(float)
+
+#     for i in range(n):
+#         x_raw = sample_uniform_ball(rng, d=d, R=radius)
+#         x = x_raw.copy()
+#         x[0] += y_rich[i]
+#         X_full[i] = x
+
+#     # Feed only x1 into the existing 1D network
+#     x_rich = X_full[:, 0].astype(float)
+
+#     # ----------------------------
+#     # DEBUG: print sampled data points
+#     # ----------------------------
+#     print("\n=== DEBUG: Sampled data points ===")
+#     print(f"n={n}, d={d}, radius={radius}")
+#     print("Generation: x_raw ~ Unif(B(0,radius)), y ∈ {-1,+1}, then x[0]+=y")
+#     print()
+
+#     print_points_per_cluster = 10
+
+#     neg_idxs = np.where(y_rich < 0)[0]
+#     pos_idxs = np.where(y_rich > 0)[0]
+
+#     def show_point(vec: np.ndarray) -> str:
+#         head = ", ".join(f"{vec[j]: .4f}" for j in range(min(6, d)))
+#         if d > 6:
+#             return "[" + head + ", ...]"
+#         return "[" + head + "]"
+
+#     print("Negative cluster samples:")
+#     for i in range(min(print_points_per_cluster, len(neg_idxs))):
+#         idx = int(neg_idxs[i])
+#         print(f"  y=-1  x={show_point(X_full[idx])}")
+
+#     print()
+
+#     print("Positive cluster samples:")
+#     for i in range(min(print_points_per_cluster, len(pos_idxs))):
+#         idx = int(pos_idxs[i])
+#         print(f"  y=+1  x={show_point(X_full[idx])}")
+
+#     print("====================================\n")
+
+#     pos_mask = (y_rich > 0)
+#     neg_mask = (y_rich < 0)
+
+#     # ----------------------------
+#     # 3) Pre-collapse training until each neuron matches activation pattern
+#     # ----------------------------
+#     def neuron_correct_fraction(params: NetworkParams) -> np.ndarray:
+#         pre = params.w[:, None] * x_rich[None, :] + params.b[:, None]  # (k,n)
+#         act = (pre > 0)
+
+#         frac = np.zeros(params.k, dtype=float)
+#         for j in range(params.k):
+#             if params.v[j] > 0:
+#                 good_pos = act[j, pos_mask]
+#                 good_neg = ~act[j, neg_mask]
+#             else:
+#                 good_pos = ~act[j, pos_mask]
+#                 good_neg = act[j, neg_mask]
+#             good = np.concatenate([good_pos, good_neg])
+#             frac[j] = float(np.mean(good))
+#         return frac
+
+#     t_collapse = None
+#     for t in range(max_pre_collapse_iters + 1):
+#         frac = neuron_correct_fraction(params_rich)
+#         if np.all(frac >= activation_frac):
+#             t_collapse = t
+#             break
+
+#         params_rich, loss_t = gd_step_wb_only(params_rich, x_rich, y_rich, learning_rate)
+
+#         if t % 10000 == 0:
+#             grads_now = compute_gradients(params_rich, x_rich, y_rich)
+#             dw_norm = float(np.linalg.norm(grads_now.w))
+#             db_norm = float(np.linalg.norm(grads_now.b))
+#             print(
+#                 f"[pre-collapse] t={t}, loss={loss_t:.6f}, "
+#                 f"min_correct_frac={frac.min():.3f}, ||dw||={dw_norm:.3e}, ||db||={db_norm:.3e}"
+#             )
+
+#     if t_collapse is None:
+#         print("Did not reach per-neuron activation condition within max_pre_collapse_iters.")
+#         print("Proceeding to collapse anyway at final params (may be noisy).")
+#         t_collapse = max_pre_collapse_iters
+
+#     print(f"Collapse time: t_collapse={t_collapse}")
+
+#     # ----------------------------
+#     # 4) Collapse network + data
+#     # ----------------------------
+#     pos_group = np.where(params_rich.v > 0)[0]
+#     neg_group = np.where(params_rich.v < 0)[0]
+#     assert len(pos_group) > 0 and len(neg_group) > 0
+
+#     w_pos = float(np.mean(params_rich.w[pos_group]))
+#     b_pos = float(np.mean(params_rich.b[pos_group]))
+#     w_neg = float(np.mean(params_rich.w[neg_group]))
+#     b_neg = float(np.mean(params_rich.b[neg_group]))
+
+#     params_simple = NetworkParams(
+#         w=np.array([w_pos, w_neg], dtype=float),
+#         b=np.array([b_pos, b_neg], dtype=float),
+#         v=np.array([1.0, -1.0], dtype=float),
+#     )
+
+#     # Collapsed dataset as two instances: (x,y) = (-1,-1), (1,1)
+#     x_simple = np.array([-1.0, 1.0], dtype=float)
+#     y_simple = np.array([-1.0, 1.0], dtype=float)
+
+#     # ----------------------------
+#     # Save chart: all (w_j, b_j) + collapsed (w,b) and also lines wx+b vs x
+#     # ----------------------------
+#     x_plot = np.linspace(-1.5, 1.5, 400)
+
+#     plt.figure(figsize=(12, 5))
+
+#     plt.subplot(1, 2, 1)
+#     pos_idx = params_rich.v > 0
+#     neg_idx = params_rich.v < 0
+#     plt.scatter(params_rich.w[pos_idx], params_rich.b[pos_idx], alpha=0.6, label="v=+1 neurons")
+#     plt.scatter(params_rich.w[neg_idx], params_rich.b[neg_idx], alpha=0.6, label="v=-1 neurons")
+#     plt.scatter([params_simple.w[0]], [params_simple.b[0]], marker="X", s=120, label="collapsed v=+1")
+#     plt.scatter([params_simple.w[1]], [params_simple.b[1]], marker="X", s=120, label="collapsed v=-1")
+#     plt.title("(w_j, b_j) for all neurons + collapsed")
+#     plt.xlabel("w")
+#     plt.ylabel("b")
+#     plt.grid(True)
+#     plt.legend()
+
+#     plt.subplot(1, 2, 2)
+#     for j in range(params_rich.k):
+#         y_line = params_rich.w[j] * x_plot + params_rich.b[j]
+#         plt.plot(x_plot, y_line, alpha=0.25)
+#     for j in range(2):
+#         y_line = params_simple.w[j] * x_plot + params_simple.b[j]
+#         plt.plot(x_plot, y_line, linewidth=3)
+#     plt.axhline(0, linestyle="--")
+#     plt.title("Lines w x + b (light=20 neurons, bold=collapsed)")
+#     plt.xlabel("x")
+#     plt.ylabel("w x + b")
+#     plt.grid(True)
+
+#     plt.tight_layout()
+#     plt.savefig(save_neurons_path, dpi=200)
+#     plt.close()
+#     print(f"Saved neuron chart to {save_neurons_path}")
+
+#     # ----------------------------
+#     # 5) Continue training both, track margins
+#     # ----------------------------
+#     def safe_margin(params: NetworkParams, x: np.ndarray, y: np.ndarray) -> float:
+#         return float(compute_margin(params, x, y))
+
+#     iters = []
+#     margins_rich = []
+#     margins_simple = []
+
+#     for s in range(post_collapse_iters + 1):
+#         if s % track_every == 0:
+#             iters.append(s)
+#             margins_rich.append(safe_margin(params_rich, x_rich, y_rich))
+#             margins_simple.append(safe_margin(params_simple, x_simple, y_simple))
+
+#         if s == post_collapse_iters:
+#             break
+
+#         params_rich, _ = gd_step_wb_only(params_rich, x_rich, y_rich, learning_rate)
+#         params_simple, _ = gd_step_wb_only(params_simple, x_simple, y_simple, learning_rate)
+
+#     plt.figure(figsize=(10, 6))
+#     plt.plot(iters, margins_rich, label="Rich (k=20, full clustered data; x=x1)")
+#     plt.plot(iters, margins_simple, label="Collapsed (k=2, data: (-1,-1),(1,1))")
+#     plt.xlabel("Post-collapse iteration")
+#     plt.ylabel("Margin")
+#     plt.title("Margin comparison: rich vs collapsed")
+#     plt.grid(True)
+#     plt.legend()
+#     plt.tight_layout()
+#     plt.savefig(save_margins_path, dpi=200)
+#     plt.close()
+#     print(f"Saved margin chart to {save_margins_path}")
+
+#     return {
+#         "t_collapse": int(t_collapse),
+#         "iters": np.array(iters, dtype=int),
+#         "margins_rich": np.array(margins_rich, dtype=float),
+#         "margins_simple": np.array(margins_simple, dtype=float),
+#         "neuron_plot": save_neurons_path,
+#         "margin_plot": save_margins_path,
+#     }
+
+# def experiment_6e_overparam_cluster_then_collapse_compare_margins(
+#     d: int = 50,
+#     n: int = 1000,
+#     radius: float = 0.5,
+#     learning_rate: float = 0.01,
+#     max_pre_collapse_iters: int = 1_000_000,
+#     post_collapse_iters: int = 1_000_000,
+#     activation_frac: float = 0.99,
+#     seed: int = 42,
+#     track_every: int = 100,
+#     save_margins_path: str = "experiment_6e_margins.png",
+#     save_neurons_path: str = "experiment_6e_neurons.png",
+# ):
+#     """
+#     DEBUG ONLY (updated data generation):
+
+#     Data generation:
+#       - sample x_raw ~ Unif(B(0, radius)) in R^d
+#       - sample y ∈ {-1,+1} uniform
+#       - set x = x_raw; x[0] += y
+#       - repeat n times
+
+#     Print:
+#       - initial neuron params (w_j,b_j,v_j)
+#       - sample data points (full 50D display)
+#       - immediate collapse by v sign
+#       - collapsed params and collapsed data centers
+
+#     Returns:
+#       params_rich, params_simple, X_full, y_full, x_rich, y_rich, x_simple, y_simple
+#     """
+
+#     import numpy as np
+#     from .core import NetworkParams
+
+#     print_neurons = 20
+#     print_points_per_cluster = 10
+#     k = 20
+
+#     rng = np.random.default_rng(seed)
+
+#     # ----------------------------
+#     # Helper: sample uniformly from a d-dim ball of radius R
+#     # ----------------------------
+#     def sample_uniform_ball(rng: np.random.Generator, d: int, R: float) -> np.ndarray:
+#         # direction uniform on sphere
+#         u = rng.normal(size=d)
+#         u /= (np.linalg.norm(u) + 1e-12)
+#         # radius with correct distribution
+#         r = R * (rng.uniform() ** (1.0 / d))
+#         return r * u
+
+#     # ----------------------------
+#     # 1) Init rich network
+#     # ----------------------------
+#     while True:
+#         v = rng.choice([-1.0, 1.0], size=k)
+#         if np.any(v == 1.0) and np.any(v == -1.0):
+#             break
+
+#     std = float(np.sqrt(2.0))
+#     w = rng.normal(0.0, std, size=k).astype(float)
+#     b = rng.normal(0.0, std, size=k).astype(float)
+
+#     params_rich = NetworkParams(w=w, b=b, v=v.astype(float))
+
+#     # Print neuron params
+#     print("\n=== DEBUG: Initial neuron parameters (rich) ===")
+#     print(f"k={k}, seed={seed}")
+#     print(f"#(v=+1)={int((params_rich.v > 0).sum())}, #(v=-1)={int((params_rich.v < 0).sum())}")
+#     m = min(print_neurons, k)
+#     for j in range(m):
+#         print(f"j={j:02d}: v={int(params_rich.v[j]):+d}, w={params_rich.w[j]: .6f}, b={params_rich.b[j]: .6f}")
+#     if m < k:
+#         print(f"... (printed first {m} of {k})")
+#     print("=============================================\n")
+
+#     # ----------------------------
+#     # 2) Generate data using your new method
+#     # ----------------------------
+#     X_full = np.zeros((n, d), dtype=float)
+#     y_full = rng.choice([-1.0, 1.0], size=n).astype(float)
+
+#     for i in range(n):
+#         x_raw = sample_uniform_ball(rng, d=d, R=radius)   # Unif ball
+#         x = x_raw.copy()
+#         x[0] += y_full[i]                                # shift first coord by ±1
+#         X_full[i] = x
+
+#     # For the existing 1D network: take first coordinate only
+#     x_rich = X_full[:, 0].astype(float)
+#     y_rich = y_full.astype(float)
+
+#     # Print sample data points
+#     print("\n=== DEBUG: Sample data points (full 50D display) ===")
+#     print(f"n={n}, d={d}, radius={radius}")
+#     print("Generation: x_raw ~ Unif(B(0,radius)), y ∈ {-1,+1}, then x[0]+=y")
+#     print(f"Showing up to {print_points_per_cluster} points from each label:\n")
+
+#     neg_idxs = np.where(y_rich < 0)[0]
+#     pos_idxs = np.where(y_rich > 0)[0]
+
+#     def show_point(vec: np.ndarray) -> str:
+#         # show first few coords + indicate zeros beyond
+#         # (not guaranteed zeros now, because x_raw has all coords)
+#         head = ", ".join(f"{vec[j]: .4f}" for j in range(min(6, d)))
+#         if d > 6:
+#             return "[" + head + ", ...]"
+#         return "[" + head + "]"
+
+#     for i in range(min(print_points_per_cluster, len(neg_idxs))):
+#         idx = int(neg_idxs[i])
+#         print(f"neg[{i:02d}] y=-1  x={show_point(X_full[idx])}")
+
+#     print()
+
+#     for i in range(min(print_points_per_cluster, len(pos_idxs))):
+#         idx = int(pos_idxs[i])
+#         print(f"pos[{i:02d}] y=+1  x={show_point(X_full[idx])}")
+
+#     print("=============================================\n")
+
+#     # ----------------------------
+#     # 3) Immediate collapse (by sign of v)
+#     # ----------------------------
+#     pos_group = np.where(params_rich.v > 0)[0]
+#     neg_group = np.where(params_rich.v < 0)[0]
+#     assert len(pos_group) > 0 and len(neg_group) > 0
+
+#     w_pos = float(np.mean(params_rich.w[pos_group]))
+#     b_pos = float(np.mean(params_rich.b[pos_group]))
+#     w_neg = float(np.mean(params_rich.w[neg_group]))
+#     b_neg = float(np.mean(params_rich.b[neg_group]))
+
+#     params_simple = NetworkParams(
+#         w=np.array([w_pos, w_neg], dtype=float),
+#         b=np.array([b_pos, b_neg], dtype=float),
+#         v=np.array([1.0, -1.0], dtype=float),
+#     )
+
+#     # Collapsed data to centers
+#     x_simple = np.array([-1.0, 1.0], dtype=float)
+#     y_simple = np.array([-1.0, 1.0], dtype=float)
+
+#     # Print collapsed params + collapsed data
+#     print("\n=== DEBUG: Collapsed network parameters (simple) ===")
+#     print("Neuron 0 (v=+1):")
+#     print(f"  w={params_simple.w[0]: .6f}, b={params_simple.b[0]: .6f}")
+#     print("Neuron 1 (v=-1):")
+#     print(f"  w={params_simple.w[1]: .6f}, b={params_simple.b[1]: .6f}")
+#     print("v:", params_simple.v)
+#     print("===============================================\n")
+
+#     print("\n=== DEBUG: Collapsed data (centers, 50D meaning) ===")
+#     print("neg center y=-1: [-1, 0, 0, ..., 0]")
+#     print("pos center y=+1: [ 1, 0, 0, ..., 0]")
+#     print("===============================================\n")
+
+#     return params_rich, params_simple, X_full, y_full, x_rich, y_rich, x_simple, y_simple
+
+def experiment_6e_overparam_cluster_then_collapse_compare_margins(
+    k: int = 20,
+    d: int = 50,
+    n: int = 1000,
+    radius: float = 0.5,
+    learning_rate: float = 0.01,
+    max_pre_collapse_iters: int = 200_000,
+    post_collapse_iters: int = 200_000,
+    collapse_loss_threshold: float = 1e-5,
+    seed: int = 42,
+    track_every: int = 100,
+    print_points_per_cluster: int = 10,
+    print_neurons: int = 20,
+    save_margins_path: str = "experiment_6e_margins.png",
+    save_function_at_collapse_path: str = "experiment_6e_functions_at_collapse.png",
+    save_rich_1d_path: str = "experiment_6e_rich_1d_no_collapse.png",
+):
+    """
+    Updated experiment 6e (with new dataset generation + extra plots/prints):
+
+    Data generation (R^d):
+      For each point:
+        x_raw ~ Unif(B(0, radius)) in R^d
+        y ∈ {-1,+1} uniform
+        x = x_raw; x[0] += y
+      We TRAIN the current 1D network using x1 = x[0].
+
+    Pre-collapse:
+      Train only (w,b); keep v fixed.
+      Stop pre-phase when loss < collapse_loss_threshold (or after max_pre_collapse_iters).
+
+    Collapse:
+      Functional grouping (based on mean pre-activation on each class):
+        m_j^+ = mean(w_j x + b_j | y=+1)
+        m_j^- = mean(w_j x + b_j | y=-1)
+      group+ if m_j^+ > m_j^- else group-.
+      Average w,b in each group -> 2-neuron network with v=[+1,-1].
+      Collapsed dataset is two instances: (-1,-1) and (1,1).
+
+    Tracking:
+      Track rich margin pre+post.
+      Track collapsed margin post (NaN pre).
+      Plot margins with a RED vertical line at collapse time.
+
+    Extras requested:
+      1) Print neurons at init and at collapse + print sampled points (like debug).
+      2) Plot f_rich(x) and f_collapsed(x) at collapse.
+      3) Also plot f_rich(x) at collapse WITHOUT collapsing neurons (rich-only plot),
+         and print f_rich(center) on x=-1 and x=+1, plus number of zero crossings.
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    from .core import NetworkParams, network_forward, exponential_loss, compute_gradients
+    from .metrics import compute_margin
+
+    rng = np.random.default_rng(seed)
+
+    # -------------------------------------------------
+    # Helper: sample uniformly from d-ball radius R
+    # -------------------------------------------------
+    def sample_uniform_ball(d_, R_):
+        u = rng.normal(size=d_)
+        u /= (np.linalg.norm(u) + 1e-12)
+        r = R_ * (rng.uniform() ** (1.0 / d_))
+        return r * u
+
+    # -------------------------------------------------
+    # Helper: GD step updating only w,b (freeze v)
+    # -------------------------------------------------
+    def gd_step_wb_only(params: NetworkParams, x: np.ndarray, y: np.ndarray, lr: float):
+        grads = compute_gradients(params, x, y)
+        new_params = NetworkParams(
+            w=params.w - lr * grads.w,
+            b=params.b - lr * grads.b,
+            v=params.v.copy(),
+        )
+        loss = float(exponential_loss(y, network_forward(new_params, x)))
+        return new_params, loss
+
+    # -------------------------------------------------
+    # Pretty printing helpers
+    # -------------------------------------------------
+    def print_neuron_params(title: str, params: NetworkParams, max_print: int):
+        print(f"\n=== {title} ===")
+        print(f"k={params.k}")
+        m = min(max_print, params.k)
+        for j in range(m):
+            print(f"j={j:02d}: v={int(params.v[j]):+d}, w={float(params.w[j]): .6f}, b={float(params.b[j]): .6f}")
+        if m < params.k:
+            print(f"... (printed first {m} of {params.k})")
+        print("=========================\n")
+
+    def show_point(vec: np.ndarray) -> str:
+        head = ", ".join(f"{vec[j]: .4f}" for j in range(min(6, vec.shape[0])))
+        if vec.shape[0] > 6:
+            return "[" + head + ", ...]"
+        return "[" + head + "]"
+
+    def print_sampled_points(X_full: np.ndarray, y: np.ndarray, title: str):
+        print(f"\n=== {title} ===")
+        print(f"n={X_full.shape[0]}, d={X_full.shape[1]}, radius={radius}")
+        print("Generation: x_raw ~ Unif(B(0,radius)), y ∈ {-1,+1}, then x[0]+=y\n")
+
+        neg_idxs = np.where(y < 0)[0]
+        pos_idxs = np.where(y > 0)[0]
+
+        print("Negative label samples (y=-1):")
+        for i in range(min(print_points_per_cluster, len(neg_idxs))):
+            idx = int(neg_idxs[i])
+            print(f"  {i:02d}: x={show_point(X_full[idx])}")
+
+        print("\nPositive label samples (y=+1):")
+        for i in range(min(print_points_per_cluster, len(pos_idxs))):
+            idx = int(pos_idxs[i])
+            print(f"  {i:02d}: x={show_point(X_full[idx])}")
+
+        print("=========================\n")
+
+    # -------------------------------------------------
+    # Rich-only diagnostic plot + center predictions + zero crossings
+    # -------------------------------------------------
+    def count_zero_crossings(params: NetworkParams, x_min=-2.0, x_max=2.0, num=5000) -> int:
+        xg = np.linspace(x_min, x_max, num)
+        fg = network_forward(params, xg)
+        s = np.sign(fg)
+        s[s == 0] = 1
+        return int(np.sum(s[:-1] * s[1:] < 0))
+
+    def plot_rich_only_1d(params: NetworkParams, save_path: str):
+        xg = np.linspace(-2.0, 2.0, 800)
+        fg = network_forward(params, xg)
+
+        f_m1 = float(network_forward(params, np.array([-1.0]))[0])
+        f_p1 = float(network_forward(params, np.array([1.0]))[0])
+        crossings = count_zero_crossings(params)
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(xg, fg, label="f_rich(x) (k=20)")
+        plt.axhline(0.0, linestyle="--")
+        plt.scatter([-1.0, 1.0], [f_m1, f_p1], s=80, marker="X", label="centers x=-1, x=1")
+        plt.xlabel("x (1D projection: first coordinate)")
+        plt.ylabel("f(x)")
+        plt.title(f"Rich network (no neuron collapse) at collapse time | zero-crossings={crossings}")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=200)
+        plt.close()
+
+        print(f"Saved rich-only plot: {save_path}")
+        print(f"f_rich(-1)={f_m1:.6f}, f_rich(1)={f_p1:.6f}, zero_crossings={crossings}")
+
+    # -------------------------------------------------
+    # 1) Initialization
+    # -------------------------------------------------
+    while True:
+        v = rng.choice([-1.0, 1.0], size=k)
+        if np.any(v == 1.0) and np.any(v == -1.0):
+            break
+
+    std = float(np.sqrt(2.0))  # N(0,2)
+    w = rng.normal(0.0, std, size=k).astype(float)
+    b = rng.normal(0.0, std, size=k).astype(float)
+
+    params_rich = NetworkParams(w=w, b=b, v=v.astype(float))
+
+    print_neuron_params("Initialization (rich network)", params_rich, print_neurons)
+
+    # -------------------------------------------------
+    # 2) Data generation (new method) + print sampled points
+    # -------------------------------------------------
+    X_full = np.zeros((n, d), dtype=float)
+    y_rich = rng.choice([-1.0, 1.0], size=n).astype(float)
+
+    for i in range(n):
+        x_raw = sample_uniform_ball(d, radius)
+        x = x_raw.copy()
+        x[0] += y_rich[i]
+        X_full[i] = x
+
+    print_sampled_points(X_full, y_rich, "Sampled data points (full 50D)")
+
+    # Train using projection x1 only (current architecture is 1D)
+    x_rich = X_full[:, 0].astype(float)
+
+    # -------------------------------------------------
+    # 3) Pre-collapse: train until loss small
+    # -------------------------------------------------
+    t_all = [0]
+    margin_rich_all = [float(compute_margin(params_rich, x_rich, y_rich))]
+    margin_simple_all = [float("nan")]
+
+    t_collapse = None
+    loss_at_collapse = None
+
+    for t in range(1, max_pre_collapse_iters + 1):
+        params_rich, loss = gd_step_wb_only(params_rich, x_rich, y_rich, learning_rate)
+
+        if t % track_every == 0:
+            t_all.append(t)
+            margin_rich_all.append(float(compute_margin(params_rich, x_rich, y_rich)))
+            margin_simple_all.append(float("nan"))
+
+        if t % 10000 == 0:
+            print(f"[pre-collapse] t={t}, loss={loss:.6e}")
+
+        if loss < collapse_loss_threshold:
+            t_collapse = t
+            loss_at_collapse = loss
+            break
+
+    if t_collapse is None:
+        t_collapse = max_pre_collapse_iters
+        loss_at_collapse = float(exponential_loss(y_rich, network_forward(params_rich, x_rich)))
+        print("WARNING: Did not reach collapse_loss_threshold within max_pre_collapse_iters.")
+
+    print(f"\n*** COLLAPSE at t={t_collapse} (loss={loss_at_collapse:.6e}) ***\n")
+
+    # Print rich params at collapse
+    print_neuron_params("Rich network parameters at collapse", params_rich, print_neurons)
+
+    # Rich-only plot (no neuron collapse) at collapse time
+    plot_rich_only_1d(params_rich, save_rich_1d_path)
+
+    # # -------------------------------------------------
+    # # 4) Functional collapse (group neurons by behavior)
+    # # -------------------------------------------------
+    # pos_mask = (y_rich > 0)
+    # neg_mask = (y_rich < 0)
+
+    # pre = params_rich.w[:, None] * x_rich[None, :] + params_rich.b[:, None]
+    # m_plus = pre[:, pos_mask].mean(axis=1)
+    # m_minus = pre[:, neg_mask].mean(axis=1)
+
+    # group_plus = np.where(m_plus > m_minus)[0]
+    # group_minus = np.where(m_plus <= m_minus)[0]
+
+    # print(f"Functional grouping sizes: |group_plus|={len(group_plus)}, |group_minus|={len(group_minus)}")
+
+    # if len(group_plus) == 0 or len(group_minus) == 0:
+    #     print("Degenerate grouping — forcing split by sign of v.")
+    #     group_plus = np.where(params_rich.v > 0)[0]
+    #     group_minus = np.where(params_rich.v < 0)[0]
+    #     print(f"Sign(v) grouping sizes: |group_plus|={len(group_plus)}, |group_minus|={len(group_minus)}")
+
+    # w_pos = float(params_rich.w[group_plus].mean())
+    # b_pos = float(params_rich.b[group_plus].mean())
+    # w_neg = float(params_rich.w[group_minus].mean())
+    # b_neg = float(params_rich.b[group_minus].mean())
+
+    # params_simple = NetworkParams(
+    #     w=np.array([w_pos, w_neg], dtype=float),
+    #     b=np.array([b_pos, b_neg], dtype=float),
+    #     v=np.array([1.0, -1.0], dtype=float),
+    # )
+
+    # print_neuron_params("Collapsed (simple) network parameters", params_simple, max_print=2)
+
+        # -------------------------------------------------
+    # 4) Functional collapse (compare with/without dead removal)
+    # -------------------------------------------------
+    pos_mask = (y_rich > 0)
+    neg_mask = (y_rich < 0)
+
+    pre = params_rich.w[:, None] * x_rich[None, :] + params_rich.b[:, None]
+
+    # -------------------------------------------------
+    # Identify dead neurons
+    # Dead = never active on dataset (pre <= 0 everywhere)
+    # -------------------------------------------------
+    alive_mask = np.any(pre > 0.0, axis=1)
+    alive_idxs = np.where(alive_mask)[0]
+    dead_idxs = np.where(~alive_mask)[0]
+
+    print(
+        f"\nDead neurons: {len(dead_idxs)} / {params_rich.k} "
+        f"(alive={len(alive_idxs)})"
+    )
+
+    # =================================================
+    # (A) Collapse WITHOUT removing dead neurons
+    # =================================================
+    m_plus_all = pre[:, pos_mask].mean(axis=1)
+    m_minus_all = pre[:, neg_mask].mean(axis=1)
+
+    group_plus_all = np.where(m_plus_all > m_minus_all)[0]
+    group_minus_all = np.where(m_plus_all <= m_minus_all)[0]
+
+    w_pos_all = float(params_rich.w[group_plus_all].sum())
+    b_pos_all = float(params_rich.b[group_plus_all].sum())
+    w_neg_all = float(params_rich.w[group_minus_all].sum())
+    b_neg_all = float(params_rich.b[group_minus_all].sum())
+
+    print("\n=== Collapse WITHOUT removing dead neurons ===")
+    print(f"group_plus size = {len(group_plus_all)}")
+    print(f"group_minus size = {len(group_minus_all)}")
+    print(f"w_pos_all = {w_pos_all:.6f}, b_pos_all = {b_pos_all:.6f}")
+    print(f"w_neg_all = {w_neg_all:.6f}, b_neg_all = {b_neg_all:.6f}")
+
+    # =================================================
+    # (B) Collapse WITH removing dead neurons
+    # =================================================
+    if len(alive_idxs) == 0:
+        raise RuntimeError("All neurons are dead — cannot collapse.")
+
+    pre_alive = pre[alive_idxs, :]
+    m_plus_alive = pre_alive[:, pos_mask].mean(axis=1)
+    m_minus_alive = pre_alive[:, neg_mask].mean(axis=1)
+
+    group_plus_alive = alive_idxs[np.where(m_plus_alive > m_minus_alive)[0]]
+    group_minus_alive = alive_idxs[np.where(m_plus_alive <= m_minus_alive)[0]]
+
+    if len(group_plus_alive) == 0 or len(group_minus_alive) == 0:
+        print("Degenerate grouping (alive only) — fallback split.")
+        mid = len(alive_idxs) // 2
+        group_plus_alive = alive_idxs[:mid]
+        group_minus_alive = alive_idxs[mid:]
+
+    w_pos_alive = float(params_rich.w[group_plus_alive].sum())
+    b_pos_alive = float(params_rich.b[group_plus_alive].sum())
+    w_neg_alive = float(params_rich.w[group_minus_alive].sum())
+    b_neg_alive = float(params_rich.b[group_minus_alive].sum())
+
+    print("\n=== Collapse WITH removing dead neurons ===")
+    print(f"group_plus size = {len(group_plus_alive)}")
+    print(f"group_minus size = {len(group_minus_alive)}")
+    print(f"w_pos_alive = {w_pos_alive:.6f}, b_pos_alive = {b_pos_alive:.6f}")
+    print(f"w_neg_alive = {w_neg_alive:.6f}, b_neg_alive = {b_neg_alive:.6f}")
+
+    # =================================================
+    # Use the ALIVE version as the actual collapsed model
+    # =================================================
+    params_simple = NetworkParams(
+        w=np.array([w_pos_alive, w_neg_alive], dtype=float),
+        b=np.array([b_pos_alive, b_neg_alive], dtype=float),
+        v=np.array([1.0, -1.0], dtype=float),
+    )
+
+    print_neuron_params(
+        "Collapsed (simple) network parameters (alive-only)",
+        params_simple,
+        max_print=2,
+    )
+    # collapsed dataset as pairs (-1,-1), (1,1)
+    x_simple = np.array([-1.0, 1.0], dtype=float)
+    y_simple = np.array([-1.0, 1.0], dtype=float)
+
+    print("\n=== Collapsed dataset (as pairs) ===")
+    print("(-1,-1)")
+    print("( 1, 1)")
+    print("===================================\n")
+
+    # -------------------------------------------------
+    # 5) Plot network functions at collapse: rich vs collapsed
+    # -------------------------------------------------
+    x_plot = np.linspace(-2.0, 2.0, 600)
+    f_rich = network_forward(params_rich, x_plot)
+    f_simple = network_forward(params_simple, x_plot)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_plot, f_rich, label="Rich f(x) at collapse (k=20)")
+    plt.plot(x_plot, f_simple, label="Collapsed f(x) at collapse (k=2)")
+    plt.axhline(0.0, linestyle="--")
+    plt.xlabel("x (1D projection: first coordinate)")
+    plt.ylabel("f(x)")
+    plt.title("Network function at collapse: rich vs collapsed")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_function_at_collapse_path, dpi=200)
+    plt.close()
+    print(f"Saved function-at-collapse plot to {save_function_at_collapse_path}")
+
+    # Ensure we have an entry at t_collapse and fill collapsed margin there
+    if t_all[-1] != t_collapse:
+        t_all.append(t_collapse)
+        margin_rich_all.append(float(compute_margin(params_rich, x_rich, y_rich)))
+        margin_simple_all.append(float(compute_margin(params_simple, x_simple, y_simple)))
+    else:
+        margin_simple_all[-1] = float(compute_margin(params_simple, x_simple, y_simple))
+
+    # -------------------------------------------------
+    # 6) Post-collapse training + margin tracking
+    # -------------------------------------------------
+    for s in range(1, post_collapse_iters + 1):
+        params_rich, _ = gd_step_wb_only(params_rich, x_rich, y_rich, learning_rate)
+        params_simple, _ = gd_step_wb_only(params_simple, x_simple, y_simple, learning_rate)
+
+        if s % track_every == 0:
+            t_global = t_collapse + s
+            t_all.append(t_global)
+            margin_rich_all.append(float(compute_margin(params_rich, x_rich, y_rich)))
+            margin_simple_all.append(float(compute_margin(params_simple, x_simple, y_simple)))
+
+    # -------------------------------------------------
+    # Plot margins pre+post with red vertical line at collapse time
+    # -------------------------------------------------
+    plt.figure(figsize=(10, 6))
+    plt.plot(t_all, margin_rich_all, label="Rich margin (k=20)")
+    plt.plot(t_all, margin_simple_all, label="Collapsed margin (k=2)")
+    plt.axvline(t_collapse, color="red", linewidth=2, label="Collapse time")
+    plt.xlabel("Iteration")
+    plt.ylabel("Margin")
+    plt.title("Margins: pre+post collapse (red line = collapse time)")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_margins_path, dpi=200)
+    plt.close()
+    print(f"Saved margins plot to {save_margins_path}")
+
+    return {
+        "t_collapse": int(t_collapse),
+        "loss_at_collapse": float(loss_at_collapse),
+        "t_all": np.array(t_all, dtype=int),
+        "margin_rich_all": np.array(margin_rich_all, dtype=float),
+        "margin_simple_all": np.array(margin_simple_all, dtype=float),
+        "save_margins_path": save_margins_path,
+        "save_function_at_collapse_path": save_function_at_collapse_path,
+        "save_rich_1d_path": save_rich_1d_path,
+        "group_plus_size": int(len(group_plus_alive)),
+        "group_minus_size": int(len(group_minus_alive)),
+    }

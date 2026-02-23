@@ -49,9 +49,9 @@ Examples:
         "--experiment",
         "-e",
         nargs="+",
-        choices=["1", "2", "3", "4", "5a", "5b", "5c", "5d", "5f", "all", "init"],
+        choices=["1", "2", "3", "4", "5a", "5b", "5c", "5d", "5f", "6e", "all", "init"],
         default=["all"],
-        help="Experiment(s) to run: 1, 2, 3, 4, 5a, 5b, 5c, 5d, 5f, all, or init",
+        help="Experiment(s) to run: 1, 2, 3, 4, 5a, 5b, 5c, 5d, 5f, 6e, all, or init",
     )
     parser.add_argument("--list-experiments", "-l", action="store_true", help="List all available experiments and exit")
 
@@ -108,6 +108,7 @@ Examples:
         experiment_5c_margin_convergence_rate,
         experiment_5f_hit_linear_condition_with_low_loss,
         experiment_5d_mixture,
+        experiment_6e_overparam_cluster_then_collapse_compare_margins
     )
 
     print("=" * 60)
@@ -219,3 +220,9 @@ Examples:
     print("All requested experiments completed!")
     print("=" * 60)
 
+    if "6e" in experiments_to_run:
+        experiment_6e_overparam_cluster_then_collapse_compare_margins(
+            learning_rate=lr,
+            post_collapse_iters=args.iterations if args.iterations else 1000000,
+            seed=args.seed if args.seed else 42,
+        )
