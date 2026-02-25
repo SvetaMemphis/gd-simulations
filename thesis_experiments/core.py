@@ -26,57 +26,77 @@ def relu(x: np.ndarray) -> np.ndarray:
     return np.maximum(0, x)
 
 
-def network_forward(params: NetworkParams, x: np.ndarray) -> np.ndarray:
+def network_forward(params: NetworkParams, X: np.ndarray) -> np.ndarray:
     """
-    Forward pass for 1D inputs.
+    Forward pass for d-dimensional inputs.
 
     Args:
-        params: network parameters
-        x: array-like of shape (n,)
+        params: network parameters with w shape (k,d), b shape (k,), v shape (k,)
+        X: array-like of shape (n,d) or (d,) for a single point
 
     Returns:
         outputs of shape (n,)
     """
-    x = np.asarray(x).reshape(-1)
-    # (k, n) pre-activations
-    pre = params.w[:, None] * x[None, :] + params.b[:, None]
-    act = relu(pre)
-    return (params.v[:, None] * act).sum(axis=0)
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        # X = X.reshape(1, -1)
+        X = X.reshape(-1, 1)
+
+    # pre-activations: (k,n) = (k,d) @ (d,n) + (k,1)
+    pre = params.w @ X.T + params.b[:, None]          # (k,n)
+    act = np.maximum(pre, 0.0)                        # (k,n)
+    out = (params.v[:, None] * act).sum(axis=0)       # (n,)
+    return out.reshape(-1)
 
 
-def exponential_loss(y: np.ndarray, predictions: np.ndarray) -> float:
-    """Mean exponential loss: mean_i exp(-y_i * f(x_i))."""
-    return float(np.mean(np.exp(-y * predictions)))
+def exponential_loss(y: np.ndarray, predictions: np.ndarray, clip: float = 50.0) -> float:
+    """
+    Mean exponential loss: mean_i exp(-y_i * f(x_i)), with clipping for numerical stability.
+    """
+    y = np.asarray(y, dtype=float).reshape(-1)
+    predictions = np.asarray(predictions, dtype=float).reshape(-1)
 
+    z = -y * predictions
+    z = np.clip(z, -clip, clip)
+    return float(np.mean(np.exp(z)))
 
 def compute_gradients(
     params: NetworkParams,
-    x: np.ndarray,
+    X: np.ndarray,
     y: np.ndarray,
     loss_fn: Callable = exponential_loss,
 ) -> NetworkParams:
     """
-    Compute gradients of mean exponential loss wrt (w,b,v).
+    Compute gradients of mean exponential loss wrt (w,b,v) for dD network.
 
-    Note: `loss_fn` is currently unused (kept for API compatibility).
+    L = mean_i exp(-y_i f(x_i)), f(x)=sum_j v_j ReLU(<w_j,x> + b_j)
     """
-    x = np.asarray(x).reshape(-1)
-    y = np.asarray(y).reshape(-1)
-    k = params.k
-    n = len(x)
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        # X = X.reshape(1, -1)
+        X = X.reshape(-1, 1)
+    y = np.asarray(y, dtype=float).reshape(-1)
 
-    pre = params.w[:, None] * x[None, :] + params.b[:, None]  # (k, n)
-    relu_pre = relu(pre)  # (k, n)
+    n, d = X.shape
+    k = params.k
+
+    pre = params.w @ X.T + params.b[:, None]              # (k,n)
+    relu_pre = np.maximum(pre, 0.0)                       # (k,n)
     outputs = (params.v[:, None] * relu_pre).sum(axis=0)  # (n,)
 
-    # dL/dout_i = -(1/n) y_i exp(-y_i out_i)
-    dL_dout = -(1.0 / n) * y * np.exp(-y * outputs)  # (n,)
+    # dL_dout = -(1.0 / n) * y * np.exp(-y * outputs)       # (n,)
+    z = -y * outputs
+    z = np.clip(z, -50.0, 50.0)          # same clip as loss
+    exp_z = np.exp(z)
 
-    indicator = (pre > 0).astype(float)  # (k, n)
+    dL_dout = -(1.0 / n) * y * exp_z
+    indicator = (pre > 0).astype(float)                   # (k,n)
 
-    grad_v = (dL_dout[None, :] * relu_pre).sum(axis=1)  # (k,)
-    grad_w = (dL_dout[None, :] * params.v[:, None] * indicator * x[None, :]).sum(axis=1)  # (k,)
-    grad_b = (dL_dout[None, :] * params.v[:, None] * indicator).sum(axis=1)  # (k,)
+    grad_v = (dL_dout[None, :] * relu_pre).sum(axis=1)    # (k,)
+
+    scale = (dL_dout[None, :] * params.v[:, None] * indicator)  # (k,n)
+    grad_w = scale @ X                                    # (k,n)@(n,d)->(k,d)
+    grad_b = scale.sum(axis=1)                            # (k,)
 
     return NetworkParams(w=grad_w, b=grad_b, v=grad_v)
 
