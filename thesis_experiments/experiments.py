@@ -1652,36 +1652,33 @@ def overlay_plot_rich_vs_collapse_1d(
     save_path: str,
 ):
     """
-    Overlay plot on a 1D grid: rich vs collapsed. No 2D construction.
+    Overlay plot on a 1D grid: rich vs collapsed.
     """
     x_plot = np.linspace(-2.0, 2.0, 800)
-    f_rich = network_forward(params_rich, x_plot).astype(float)
-    f_col = network_forward(params_collapse_1d, x_plot).astype(float)
+    f_rich = network_forward(params_rich, x_plot).astype(float).reshape(-1)
+    f_col = network_forward(params_collapse_1d, x_plot).astype(float).reshape(-1)
 
-    # diagnostics at ±1
     f_r_m1 = float(network_forward(params_rich, np.array([-1.0]))[0])
     f_r_p1 = float(network_forward(params_rich, np.array([+1.0]))[0])
     f_c_m1 = float(network_forward(params_collapse_1d, np.array([-1.0]))[0])
     f_c_p1 = float(network_forward(params_collapse_1d, np.array([+1.0]))[0])
 
-    print("=== OVERLAY DIAGNOSTICS (1D) ===")
+    print("=== OVERLAY DIAGNOSTICS (1D, on y-axis coordinate) ===")
     print(f"t_collapse={t_collapse}")
     print(f"rich:     f(-1)={f_r_m1:.6f}, f(+1)={f_r_p1:.6f}")
     print(f"collapse: f(-1)={f_c_m1:.6f}, f(+1)={f_c_p1:.6f}")
     print(f"max|rich-collapse| on grid = {float(np.max(np.abs(f_rich - f_col))):.6e}")
-    print("===============================\n")
+    print("======================================================\n")
 
     plt.figure(figsize=(10, 6))
-    plt.plot(x_plot, f_rich, label="Projection (rich f(x) at collapse)")
+    plt.plot(x_plot, f_rich, label="Rich (trained on y)")
     plt.plot(x_plot, f_col, "--", label="Collapse (1D 2-ReLU)")
-
     plt.axhline(0.0, linestyle="--")
     plt.scatter([-1.0, +1.0], [f_r_m1, f_r_p1], s=80, marker="X", label="train points (rich)")
     plt.scatter([-1.0, +1.0], [f_c_m1, f_c_p1], s=80, marker="o", label="train points (collapse)")
-
-    plt.xlabel("x")
+    plt.xlabel("t (y coordinate)")
     plt.ylabel("f")
-    plt.title(f"Overlay: rich projection + 1D collapse, t={t_collapse}")
+    plt.title(f"Overlay: rich + 1D collapse, t={t_collapse}")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
@@ -1703,11 +1700,9 @@ def overlay_plot_rich_vs_collapse_1d(
 
 def projection_margin(params: "NetworkParams", x_min=-2.0, x_max=2.0, num=2000, gap=0.05) -> float:
     """
-    Projection margin on a 1D grid, like your old plot:
+    Projection margin on a 1D grid:
         m_proj = min_{x in grid} sign(x) * f(x)
-
-    IMPORTANT: exclude a small gap around 0 ([-gap, +gap]) so the min isn't dominated
-    by the decision boundary neighborhood (where f ~ 0).
+    Excludes [-gap, +gap] so the min isn't dominated near the decision boundary.
     """
     x_left = np.linspace(x_min, -gap, num // 2, endpoint=True)
     x_right = np.linspace(gap, x_max, num // 2, endpoint=True)
@@ -1716,21 +1711,23 @@ def projection_margin(params: "NetworkParams", x_min=-2.0, x_max=2.0, num=2000, 
     y_grid = np.sign(x_grid)
     y_grid[y_grid == 0] = 1.0
 
-    f = network_forward(params, x_grid).astype(float)
+    f = network_forward(params, x_grid).astype(float).reshape(-1)
     return float(np.min(y_grid * f))
 
 
-def find_root_on_grid_1d(params: "NetworkParams",
-                         x_min: float = -2.0,
-                         x_max: float = 2.0,
-                         num: int = 4001) -> float:
+def find_root_on_grid_1d(
+    params: "NetworkParams",
+    x_min: float = -2.0,
+    x_max: float = 2.0,
+    num: int = 4001,
+) -> float:
     """
     Finds an approximate root x0 where f(x0)=0 by scanning a grid and linear interpolation.
     Picks the root closest to 0 if multiple exist.
     Raises if no sign change found.
     """
     xg = np.linspace(x_min, x_max, num)
-    fg = network_forward(params, xg).astype(float)
+    fg = network_forward(params, xg).astype(float).reshape(-1)
 
     s = np.sign(fg)
     s[s == 0] = 1.0
@@ -1740,9 +1737,8 @@ def find_root_on_grid_1d(params: "NetworkParams",
 
     roots = []
     for i in idx:
-        x1, x2 = float(xg[i]), float(xg[i+1])
-        f1, f2 = float(fg[i]), float(fg[i+1])
-        # linear interpolation
+        x1, x2 = float(xg[i]), float(xg[i + 1])
+        f1, f2 = float(fg[i]), float(fg[i + 1])
         xr = x1 - f1 * (x2 - x1) / (f2 - f1 + 1e-18)
         roots.append(xr)
 
@@ -1751,60 +1747,796 @@ def find_root_on_grid_1d(params: "NetworkParams",
     return x0
 
 
+
 def geometric_margin_from_root(x0: float) -> float:
     """
-    Your definition:
-      margin = distance from x-axis crossing to nearest of {-1,+1}
-             = min(|x0+1|, |x0-1|)
+    margin = min(|x0+1|, |x0-1|)
     """
     return float(min(abs(x0 + 1.0), abs(x0 - 1.0)))
 
 
+
+# def experiment_6e_overparam_cluster_then_collapse_compare_margins(
+#     k: int = 20,
+#     d: int = 10,
+#     n: int = 1000,
+#     radius: float = 0.01,
+#     learning_rate: float = 0.01,
+#     # max_pre_collapse_iters: int = 1_000_000,
+#     max_pre_collapse_iters: int = 500_000,
+#     post_collapse_iters: int = 1_000_000,
+#     collapse_loss_threshold: float = 1e-12,
+#     seed: int = 42,
+#     # track_every: int = 100_000,
+#     track_every: int = 1000,
+#     act_eps: float = 1e-9,
+#     root_x_min: float = -2.0,
+#     root_x_max: float = 2.0,
+#     root_grid_num: int = 4001,
+# ):
+#     """
+#     What this does:
+
+#     1) Train a rich 1D k-ReLU network on two points x={-1,+1}, y={-1,+1}
+#        until BOTH:
+#          - every neuron is active on exactly one of the two points (single-point-only),
+#          - exponential loss is tiny (loss < collapse_loss_threshold),
+#        OR until max_pre_collapse_iters.
+
+#     2) Collapse (distill) the rich network to a 2-ReLU 1D network:
+#          f(x) = ReLU(w1 x + b1) - ReLU(w2 x + b2)   (v=[+1,-1])
+#        using your existing collapse_to_2relu_1d_with_margin_match(...).
+
+#     3) Save overlay plot at collapse time:
+#          debug_projection_with_collapse_overlay.png
+
+#     4) Continue training BOTH networks in parallel for post_collapse_iters,
+#        and plot a GEOMETRIC projection margin defined by you:
+#          - find x0 where f(x0)=0 (x-axis crossing on 1D projection),
+#          - margin = min(|x0+1|, |x0-1|)   (distance to nearest of ±1).
+
+#        IMPORTANT: The rich margin curve is shown from iteration 0 (init),
+#        and the collapsed curve starts at t_collapse.
+#        A vertical RED line is drawn at t=t_collapse.
+
+#        Saved to:
+#          debug_geom_margin_root_distance.png
+#     """
+
+#     rng = np.random.default_rng(seed)
+
+#     # -----------------------------
+#     # local helpers
+#     # -----------------------------
+#     def print_params(title: str, params: "NetworkParams", max_print: int = 10):
+#         print(f"\n=== {title} ===")
+#         print(f"k={params.k}")
+#         m = min(max_print, params.k)
+#         for j in range(m):
+#             print(
+#                 f"j={j:02d}: v={int(params.v[j]):+d}, "
+#                 f"w={float(params.w[j]): .6f}, b={float(params.b[j]): .6f}"
+#             )
+#         if m < params.k:
+#             print(f"... (printed first {m} of {params.k})")
+#         print("=========================\n")
+
+#     def gd_step_wb_only(params: "NetworkParams", x: np.ndarray, y: np.ndarray, lr: float):
+#         grads = compute_gradients(params, x, y)
+#         new_params = NetworkParams(
+#             w=params.w - lr * grads.w,
+#             b=params.b - lr * grads.b,
+#             v=params.v.copy(),
+#         )
+#         loss = float(exponential_loss(y, network_forward(new_params, x)))
+#         return new_params, loss
+
+#     def overlay_plot_rich_vs_collapse_1d(
+#         params_rich: "NetworkParams",
+#         params_collapse_1d: "NetworkParams",
+#         t_collapse: int,
+#         save_path: str,
+#     ):
+#         x_plot = np.linspace(-2.0, 2.0, 800)
+#         f_rich = network_forward(params_rich, x_plot).astype(float)
+#         f_col = network_forward(params_collapse_1d, x_plot).astype(float)
+
+#         f_r_m1 = float(network_forward(params_rich, np.array([-1.0]))[0])
+#         f_r_p1 = float(network_forward(params_rich, np.array([+1.0]))[0])
+#         f_c_m1 = float(network_forward(params_collapse_1d, np.array([-1.0]))[0])
+#         f_c_p1 = float(network_forward(params_collapse_1d, np.array([+1.0]))[0])
+
+#         print("=== OVERLAY DIAGNOSTICS (1D) ===")
+#         print(f"t_collapse={t_collapse}")
+#         print(f"rich:     f(-1)={f_r_m1:.6f}, f(+1)={f_r_p1:.6f}")
+#         print(f"collapse: f(-1)={f_c_m1:.6f}, f(+1)={f_c_p1:.6f}")
+#         print(f"max|rich-collapse| on grid = {float(np.max(np.abs(f_rich - f_col))):.6e}")
+#         print("===============================\n")
+
+#         plt.figure(figsize=(10, 6))
+#         plt.plot(x_plot, f_rich, label="Projection (rich f(x) at collapse)")
+#         plt.plot(x_plot, f_col, "--", label="Collapse (1D 2-ReLU)")
+#         plt.axhline(0.0, linestyle="--")
+#         plt.scatter([-1.0, +1.0], [f_r_m1, f_r_p1], s=80, marker="X", label="train points (rich)")
+#         plt.scatter([-1.0, +1.0], [f_c_m1, f_c_p1], s=80, marker="o", label="train points (collapse)")
+#         plt.xlabel("x")
+#         plt.ylabel("f")
+#         plt.title(f"Overlay: rich projection + 1D collapse, t={t_collapse}")
+#         plt.grid(True)
+#         plt.legend()
+#         plt.tight_layout()
+#         plt.savefig(save_path, dpi=200)
+#         plt.close()
+#         print("Saved overlay plot to:", save_path)
+
+#     # -----------------------------
+#     # STEP 1: dataset (two points)
+#     # -----------------------------
+#     X_full = np.zeros((2, d), dtype=float)
+#     y = np.array([-1.0, +1.0], dtype=float)
+#     X_full[0, 0] = -1.0
+#     X_full[1, 0] = +1.0
+#     x_1d = X_full[:, 0].astype(float)  # [-1, +1]
+
+#     # -----------------------------
+#     # STEP 2: init rich network
+#     # -----------------------------
+#     while True:
+#         v = rng.choice([-1.0, 1.0], size=k).astype(float)
+#         if np.any(v > 0) and np.any(v < 0):
+#             break
+
+#     w = rng.normal(0.0, np.sqrt(2.0), size=k).astype(float)
+#     b = np.zeros(k, dtype=float)
+#     params_rich = NetworkParams(w=w, b=b, v=v)
+
+#     print_params("INIT rich network (1D He init)", params_rich, max_print=10)
+
+#     f0 = network_forward(params_rich, x_1d)
+#     L0 = float(exponential_loss(y, f0))
+#     print("At init:")
+#     print("  f(x_1d) =", f0)
+#     print("  y*f     =", y * f0)
+#     print("  loss    =", f"{L0:.6e}\n")
+
+#     # -----------------------------
+#     # Track geom margin for RICH from the very beginning
+#     # (global iteration axis)
+#     # -----------------------------
+#     global_iters = [0]
+#     try:
+#         x0_init = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
+#         m_init = geometric_margin_from_root(x0_init)
+#     except RuntimeError:
+#         x0_init, m_init = np.nan, np.nan
+#     rich_geom_hist = [m_init]
+
+#     # -----------------------------
+#     # STEP 3: pre-collapse training
+#     # -----------------------------
+#     t_collapse = None
+#     loss_gate = collapse_loss_threshold
+
+#     for t in range(1, max_pre_collapse_iters + 1):
+#         params_rich, loss = gd_step_wb_only(params_rich, x_1d, y, learning_rate)
+
+#         num_dead, num_single, num_both = count_single_point_only_neurons(params_rich, x_1d, act_eps=act_eps)
+
+#         if t % track_every == 0 or t == 1:
+#             # log + record rich geom margin along the way
+#             f = network_forward(params_rich, x_1d)
+#             if t%100_000 == 0: 
+#                 print(f"[pre t={t}] loss={loss:.3e} | f={f} | y*f={y*f} | "
+#                     f"neurons(single={num_single}, both={num_both}, dead={num_dead})")
+
+#             try:
+#                 x0 = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
+#                 m = geometric_margin_from_root(x0)
+#             except RuntimeError:
+#                 m = np.nan
+#             global_iters.append(t)
+#             rich_geom_hist.append(m)
+
+#         # stop criterion
+#         if (num_single == params_rich.k) and (loss < loss_gate):
+#             t_collapse = t
+#             print(f"\n*** READY TO COLLAPSE at t={t} | loss={loss:.3e} ***\n")
+#             break
+
+#     if t_collapse is None:
+#         t_collapse = max_pre_collapse_iters
+#         print("WARNING: did not reach (single-point-only AND tiny-loss) within max_pre_collapse_iters.")
+#         print(f"Proceeding to collapse at t={t_collapse}.\n")
+
+#     # Make sure we recorded a point exactly at t_collapse (useful for the vertical line)
+#     if global_iters[-1] != t_collapse:
+#         try:
+#             x0 = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
+#             m = geometric_margin_from_root(x0)
+#         except RuntimeError:
+#             m = np.nan
+#         global_iters.append(t_collapse)
+#         rich_geom_hist.append(m)
+
+#     print(f"\n*** COLLAPSE at t={t_collapse} ***\n")
+#     print_params("rich params at collapse", params_rich, max_print=10)
+
+#     # -----------------------------
+#     # STEP 4: collapse to 2-ReLU
+#     # -----------------------------
+#     # params_collapse_1d, collapse_info = collapse_to_2relu_1d_with_margin_match(
+#     #     params_rich=params_rich,
+#     #     x_fit=x_1d,
+#     #     y_fit=y,
+#     #     distill_iters=20000,
+#     #     distill_lr=0.01,
+#     # )
+#     params_collapse_1d, collapse_info = collapse_2relu_1d_with_3_constraints_enum(
+#         params_rich=params_rich,
+#         x_fit=x_1d,
+#         y_fit=y,
+#         x0_search_min=root_x_min,
+#         x0_search_max=root_x_max,
+#         x0_search_num=root_grid_num,
+# )
+#     # ===== GEOMETRIC MARGIN AT COLLAPSE =====
+
+#     # rich
+#     try:
+#         x0_rich = find_root_on_grid_1d(
+#             params_rich,
+#             x_min=root_x_min,
+#             x_max=root_x_max,
+#             num=root_grid_num,
+#         )
+#         margin_rich_geom = geometric_margin_from_root(x0_rich)
+#     except RuntimeError:
+#         x0_rich = np.nan
+#         margin_rich_geom = np.nan
+
+#     # collapse
+#     try:
+#         x0_col = find_root_on_grid_1d(
+#             params_collapse_1d,
+#             x_min=root_x_min,
+#             x_max=root_x_max,
+#             num=root_grid_num,
+#         )
+#         margin_col_geom = geometric_margin_from_root(x0_col)
+#     except RuntimeError:
+#         x0_col = np.nan
+#         margin_col_geom = np.nan
+
+#     print("\n=== GEOMETRIC MARGINS AT COLLAPSE ===")
+#     print(f"rich:     x0={x0_rich:.6f}  margin={margin_rich_geom:.6f}")
+#     print(f"collapse: x0={x0_col:.6f}  margin={margin_col_geom:.6f}")
+#     print(f"|diff| = {abs(margin_rich_geom - margin_col_geom):.6e}")
+#     print("=====================================\n")
+
+#     print("Collapsed v (should be [1, -1]):", params_collapse_1d.v)
+#     print("Collapsed params:")
+#     print(f"  w1={float(params_collapse_1d.w[0]):.6f}, b1={float(params_collapse_1d.b[0]):.6f}, v1=+1")
+#     print(f"  w2={float(params_collapse_1d.w[1]):.6f}, b2={float(params_collapse_1d.b[1]):.6f}, v2=-1")
+#     print("===============================================================\n")
+
+#     # -----------------------------
+#     # STEP 5: overlay at collapse time (your "good" plot)
+#     # -----------------------------
+#     save_overlay_path = "debug_projection_with_collapse_overlay.png"
+#     overlay_plot_rich_vs_collapse_1d(
+#         params_rich=params_rich,
+#         params_collapse_1d=params_collapse_1d,
+#         t_collapse=t_collapse,
+#         save_path=save_overlay_path,
+#     )
+
+#     # -----------------------------
+#     # STEP 6: post-collapse training in parallel
+#     # Track geom margin for COLLAPSED starting at t_collapse
+#     # -----------------------------
+#     col_iters = [t_collapse]
+#     try:
+#         x0c = find_root_on_grid_1d(params_collapse_1d, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
+#         mc0 = geometric_margin_from_root(x0c)
+#     except RuntimeError:
+#         mc0 = np.nan
+#     col_geom_hist = [mc0]
+
+#     for t_post in range(1, post_collapse_iters + 1):
+#         params_rich, loss_r = gd_step_wb_only(params_rich, x_1d, y, learning_rate)
+#         params_collapse_1d, loss_c = gd_step_wb_only(params_collapse_1d, x_1d, y, learning_rate)
+
+#         if t_post % 10_000 == 0:
+#             w1 = float(params_collapse_1d.w[0])
+#             b1 = float(params_collapse_1d.b[0])
+#             w2 = float(params_collapse_1d.w[1])
+#             b2 = float(params_collapse_1d.b[1])
+
+#             # optional: גם להדפיס את ה-root והמרג׳ין הגיאומטרי
+#             try:
+#                 x0 = find_root_on_grid_1d(
+#                     params_collapse_1d,
+#                     x_min=root_x_min,
+#                     x_max=root_x_max,
+#                     num=root_grid_num,
+#                 )
+#                 margin_geom = geometric_margin_from_root(x0)
+#             except RuntimeError:
+#                 x0 = np.nan
+#                 margin_geom = np.nan
+
+#             print(f"[post t={t_post}] "
+#                 f"w1={w1:.6f}, b1={b1:.6f} | "
+#                 f"w2={w2:.6f}, b2={b2:.6f} | "
+#                 f"x0={x0:.6f}, geom_margin={margin_geom:.6f}")
+
+#         if t_post % track_every == 0 or t_post == 1:
+#             t_global = t_collapse + t_post
+
+#             # rich
+#             try:
+#                 x0r = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
+#                 mr = geometric_margin_from_root(x0r)
+#             except RuntimeError:
+#                 mr = np.nan
+#             global_iters.append(t_global)
+#             rich_geom_hist.append(mr)
+
+#             # collapse
+#             try:
+#                 x0c = find_root_on_grid_1d(params_collapse_1d, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
+#                 mc = geometric_margin_from_root(x0c)
+#             except RuntimeError:
+#                 mc = np.nan
+#             col_iters.append(t_global)
+#             col_geom_hist.append(mc)
+
+#             if t_post%100_000 == 0:
+#                 print(f"[post t={t_post}] (global={t_global}) loss_r={loss_r:.3e} loss_c={loss_c:.3e} | "
+#                   f"m_rich={mr:.6f} m_col={mc:.6f}")
+
+#     # -----------------------------
+#     # STEP 7: plot geom margin from init + vertical red line at collapse join
+#     # -----------------------------
+#     save_margin_path = "debug_geom_margin_root_distance.png"
+#     plt.figure(figsize=(10, 6))
+
+#     plt.plot(global_iters, rich_geom_hist, label="Geom margin (rich projection)")
+#     plt.plot(col_iters, col_geom_hist, label="Geom margin (collapsed)")
+
+#     plt.axvline(x=t_collapse, color="red", linestyle="--", linewidth=2, label="collapse join")
+
+#     plt.ylim(bottom=0.0)
+#     plt.xlabel("Training iterations (global)")
+#     plt.ylabel("margin = min(|x0+1|, |x0-1|)")
+#     plt.title("Geometric margin via root-distance: rich from init + collapse join")
+#     plt.grid(True)
+#     plt.legend()
+#     plt.tight_layout()
+#     plt.savefig(save_margin_path, dpi=200)
+#     plt.close()
+#     print("Saved geometric margin plot to:", save_margin_path)
+
+#     return {
+#         "t_collapse": int(t_collapse),
+#         "params_rich_final": params_rich,
+#         "params_collapse_final": params_collapse_1d,
+#         "collapse_info": collapse_info,
+#         "overlay_plot_path": save_overlay_path,
+#         "geom_margin_plot_path": save_margin_path,
+#         "geom_margin_history": {
+#             "iters_rich": np.array(global_iters, dtype=int),
+#             "m_rich": np.array(rich_geom_hist, dtype=float),
+#             "iters_collapse": np.array(col_iters, dtype=int),
+#             "m_collapse": np.array(col_geom_hist, dtype=float),
+#             "t_collapse": int(t_collapse),
+#         },
+#     }
+
+
+
+def _sample_unit_directions(rng: np.random.Generator, d: int, num: int) -> np.ndarray:
+    """
+    Sample 'num' random unit directions in R^d.
+    """
+    U = rng.normal(0.0, 1.0, size=(num, d))
+    U /= (np.linalg.norm(U, axis=1, keepdims=True) + 1e-12)
+    return U
+
+
+def _forward_on_line(params_rich: "NetworkParams", t_grid: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """
+    Evaluate the rich network on the line x(t)=t*u.
+
+    Supports two cases:
+      - 1D rich network: params_rich.w is shape (k,), and network_forward expects (n,) scalars.
+        In this case, the function effectively depends only on the scalar t (we ignore u).
+      - dD rich network: params_rich.w is shape (d,k), and network_forward expects X shape (n,d).
+    """
+    t_grid = np.asarray(t_grid, dtype=float).reshape(-1)
+
+    w = params_rich.w
+    if np.ndim(w) == 1:
+        # 1D network: f(t)
+        return network_forward(params_rich, t_grid).astype(float).reshape(-1)
+
+    # dD network: f(t*u)
+    X_line = t_grid[:, None] * u[None, :]  # (n,d)
+    return network_forward(params_rich, X_line).astype(float).reshape(-1)
+
+def find_root_on_grid_1d_fn(fn_1d, x_min: float, x_max: float, num: int = 4001) -> float:
+    """
+    Find an approximate root x0 where fn_1d(x0)=0 by scanning a 1D grid and linear interpolation.
+    Picks the root closest to 0 if multiple exist.
+    Raises if no sign change found.
+    """
+    xg = np.linspace(x_min, x_max, num)
+    fg = np.asarray(fn_1d(xg), dtype=float).reshape(-1)
+
+    s = np.sign(fg)
+    s[s == 0] = 1.0
+    idx = np.where(s[:-1] * s[1:] < 0)[0]
+    if len(idx) == 0:
+        raise RuntimeError("No root found in grid range. Try widening [x_min,x_max].")
+
+    roots = []
+    for i in idx:
+        x1, x2 = float(xg[i]), float(xg[i + 1])
+        f1, f2 = float(fg[i]), float(fg[i + 1])
+        xr = x1 - f1 * (x2 - x1) / (f2 - f1 + 1e-18)
+        roots.append(xr)
+
+    roots = np.array(roots, dtype=float)
+    return float(roots[np.argmin(np.abs(roots))])
+
+def worst_projection_geometric_margin_rich(
+    params_rich: "NetworkParams",
+    X_train: np.ndarray,
+    num_directions: int = 200,
+    seed: int = 0,
+    root_grid_num: int = 4001,
+) -> float:
+    """
+    Approximate the minimal geometric margin over all 1D projections/directions.
+
+    For each random unit direction u:
+      - Project the training points: s_i = <u, X_i>  (shape (2,))
+      - Consider the 1D restriction of the classifier along the line x(t)=t*u:
+            g_u(t) = f_rich(t*u)
+      - Find a root t0 where g_u(t0)=0 (closest to 0)
+      - Define the geometric margin for this direction as:
+            margin_u = min_i |t0 - s_i|
+        (distance along the 1D axis to the nearest projected training point)
+
+    Return:
+      min_u margin_u  over sampled directions.
+
+    Notes:
+      - This is a Monte-Carlo approximation of the infimum over all directions.
+      - If your rich network is actually 1D (w is (k,)), then this reduces to the same
+        margin you already compute (directions do not matter).
+    """
+    X_train = np.asarray(X_train, dtype=float)
+    n, d = X_train.shape
+    if n != 2:
+        raise ValueError("This helper expects exactly 2 training points (shape (2,d)).")
+
+    w = params_rich.w
+    if np.ndim(w) == 1:
+        # 1D rich network: worst over projections equals the 1D margin you already compute
+        try:
+            t0 = find_root_on_grid_1d_fn(
+                fn_1d=lambda tt: _forward_on_line(params_rich, tt, u=None),
+                x_min=-2.0,
+                x_max=2.0,
+                num=root_grid_num,
+            )
+            # In 1D, your training points are at x in {-1,+1} (or whatever you used),
+            # but here we don't know that. For safety, return NaN and let you use your existing curve.
+            # (Preferred: keep using your existing rich_geom margin in the 1D-only setting.)
+            return np.nan
+        except RuntimeError:
+            return np.nan
+
+    rng = np.random.default_rng(seed)
+    U = _sample_unit_directions(rng, d=d, num=num_directions)
+
+    # Choose a search interval that likely contains a root for most directions
+    # Points have norm around ~sqrt(d) (since (y,x) with ||x||=sqrt(d)), so use a generous range.
+    R = float(np.sqrt(d) + 3.0)
+    x_min, x_max = -R, +R
+
+    best = np.inf
+    for u in U:
+        s = X_train @ u  # (2,)
+        try:
+            t0 = find_root_on_grid_1d_fn(
+                fn_1d=lambda tt, uu=u: _forward_on_line(params_rich, tt, uu),
+                x_min=x_min,
+                x_max=x_max,
+                num=root_grid_num,
+            )
+        except RuntimeError:
+            continue
+
+        margin_u = float(np.min(np.abs(t0 - s)))
+        if margin_u < best:
+            best = margin_u
+
+    if not np.isfinite(best):
+        return np.nan
+    return float(best)
+
+# ------------------------------------------------------------
+# External sampler (data generation)
+# ------------------------------------------------------------
+def sample_points_y_times_sphere(
+    d: int,
+    n_points: int = 2,
+    seed: Optional[int] = None,
+    ensure_opposite: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Sample training points in R^d as follows:
+      1) Sample x in R^{d-1} uniformly on the sphere of radius sqrt(d).
+      2) Sample y in {+1,-1}.
+      3) Form the point: (y, x_1, ..., x_{d-1}).
+
+    Returns:
+      X: shape (n_points, d)
+      y: shape (n_points,)
+    """
+    if d < 2:
+        raise ValueError("d must be >= 2 (first coordinate is y, plus d-1 sphere coordinates).")
+
+    rng = np.random.default_rng(seed)
+
+    # Sample labels y
+    if ensure_opposite and n_points == 2:
+        y = np.array([-1.0, +1.0], dtype=float)
+        rng.shuffle(y)
+    else:
+        y = rng.choice([-1.0, +1.0], size=n_points).astype(float)
+
+    # Sample x on sphere in R^{d-1} with radius sqrt(d)
+    z = rng.normal(0.0, 1.0, size=(n_points, d - 1))
+    norms = np.linalg.norm(z, axis=1, keepdims=True) + 1e-12
+    x = z / norms
+    x *= np.sqrt(float(d))
+
+    # Build points (y, x)
+    X = np.zeros((n_points, d), dtype=float)
+    X[:, 0] = y
+    X[:, 1:] = x
+
+    return X, y
+
+
+
+# ------------------------------------------------------------
+# Helpers for "collapse is on y"
+# ------------------------------------------------------------
+def points_on_y_axis(t_1d: np.ndarray, d: int) -> np.ndarray:
+    """
+    Embed 1D scalars t into R^d along the y-axis:
+        (t, 0, 0, ..., 0)
+    """
+    t_1d = np.asarray(t_1d, dtype=float).reshape(-1)
+    X = np.zeros((t_1d.shape[0], d), dtype=float)
+    X[:, 0] = t_1d
+    return X
+
+
+def forward_rich_on_y_axis(params_rich: "NetworkParams", t_1d: np.ndarray, d: int) -> np.ndarray:
+    """
+    Define the 1D projection/function used for collapse:
+        g(t) = f_rich((t, 0, ..., 0))
+    """
+    X_axis = points_on_y_axis(t_1d, d)
+    return network_forward(params_rich, X_axis)
+
+
+# def signed_train_margin(params: "NetworkParams", X_train: np.ndarray, y_train: np.ndarray) -> float:
+#     """
+#     Signed margin on a finite dataset:
+#         m = min_i y_i f(x_i)
+#     """
+#     X_train = np.asarray(X_train, dtype=float)
+#     y_train = np.asarray(y_train, dtype=float).reshape(-1)
+#     f = network_forward(params, X_train).astype(float).reshape(-1)
+#     return float(np.min(y_train * f))
+# ------------------------------------------------------------
+# Helpers (1D network, collapse/projection is on y)
+# ------------------------------------------------------------
+def signed_train_margin(params: "NetworkParams", x_train: np.ndarray, y_train: np.ndarray) -> float:
+    """
+    Signed margin on a finite dataset:
+        m = min_i y_i f(x_i)
+    """
+    x_train = np.asarray(x_train, dtype=float).reshape(-1)
+    y_train = np.asarray(y_train, dtype=float).reshape(-1)
+    f = network_forward(params, x_train).astype(float).reshape(-1)
+    return float(np.min(y_train * f))
+
+
+# def count_single_point_only_neurons_2pts(
+#     params: "NetworkParams",
+#     X_2pts: np.ndarray,
+#     act_eps: float = 1e-9,
+# ):
+#     """
+#     For exactly 2 training points X_2pts (shape (2,d)), count neurons that are:
+#       - dead:   active on 0 points
+#       - single: active on exactly 1 point
+#       - both:   active on both points
+
+#     "active" means pre-activation (w·x + b) > act_eps.
+
+#     IMPORTANT:
+#     This assumes your network is of the form sum_j v_j ReLU(<w_j,x> + b_j),
+#     and that params.w is shaped (d,k) (or anything compatible with X @ w).
+#     """
+#     X_2pts = np.asarray(X_2pts, dtype=float)
+#     if X_2pts.shape[0] != 2:
+#         raise ValueError("This helper expects exactly 2 training points.")
+
+#     # pre-activations: (2,k)
+#     z = X_2pts @ params.w + params.b  # expects params.w shape (d,k) and params.b shape (k,)
+#     a = (z > act_eps).astype(int)
+#     s = a.sum(axis=0)  # (k,) in {0,1,2}
+
+#     num_dead = int(np.sum(s == 0))
+#     num_single = int(np.sum(s == 1))
+#     num_both = int(np.sum(s == 2))
+#     return num_dead, num_single, num_both
+
+def count_single_point_only_neurons(
+    params: "NetworkParams",
+    x_1d: np.ndarray,
+    act_eps: float = 1e-9,
+):
+    """
+    For exactly 2 training points x_1d (shape (2,)), count how many neurons are:
+      - dead:   active on 0 points
+      - single: active on exactly 1 point
+      - both:   active on both points
+    where "active" means (w*x + b) > act_eps.
+    """
+    x_1d = np.asarray(x_1d, dtype=float).reshape(-1)
+    if x_1d.shape[0] != 2:
+        raise ValueError("This helper expects exactly 2 training points.")
+
+    z = x_1d[:, None] * params.w[None, :] + params.b[None, :]  # (2,k)
+    a = (z > act_eps).astype(int)                               # (2,k)
+    s = a.sum(axis=0)                                           # (k,) in {0,1,2}
+
+    num_dead = int(np.sum(s == 0))
+    num_single = int(np.sum(s == 1))
+    num_both = int(np.sum(s == 2))
+    return num_dead, num_single, num_both
+
+
+
+def projection_margin_on_y_axis(params_rich: "NetworkParams", d: int,
+                               t_min=-2.0, t_max=2.0, num=2000, gap=0.05) -> float:
+    """
+    Projection margin on the y-axis (excluding a small gap around 0):
+        m_proj = min_{t in grid} sign(t) * g(t)
+    where g(t)=f((t,0,...,0)).
+    """
+    t_left = np.linspace(t_min, -gap, num // 2, endpoint=True)
+    t_right = np.linspace(gap, t_max, num // 2, endpoint=True)
+    t_grid = np.concatenate([t_left, t_right], axis=0)
+
+    y_grid = np.sign(t_grid)
+    y_grid[y_grid == 0] = 1.0
+
+    g = forward_rich_on_y_axis(params_rich, t_grid, d).astype(float).reshape(-1)
+    return float(np.min(y_grid * g))
+
+
+
+
+
+def geometric_margin_from_root(t0: float) -> float:
+    """
+    Your definition:
+      margin = distance from axis crossing to nearest of {-1,+1}
+             = min(|t0+1|, |t0-1|)
+    """
+    return float(min(abs(t0 + 1.0), abs(t0 - 1.0)))
+
+
+def overlay_plot_rich_vs_collapse_on_y_axis(
+    params_rich: "NetworkParams",
+    params_collapse_1d: "NetworkParams",
+    t_collapse: int,
+    d: int,
+    save_path: str,
+):
+    """
+    Overlay plot on the y-axis: rich g(t)=f((t,0,...,0)) vs collapsed 1D network.
+    """
+    t_plot = np.linspace(-2.0, 2.0, 800)
+    g_rich = forward_rich_on_y_axis(params_rich, t_plot, d).astype(float).reshape(-1)
+    f_col = network_forward(params_collapse_1d, t_plot).astype(float).reshape(-1)
+
+    # diagnostics at ±1
+    g_r_m1 = float(forward_rich_on_y_axis(params_rich, np.array([-1.0]), d)[0])
+    g_r_p1 = float(forward_rich_on_y_axis(params_rich, np.array([+1.0]), d)[0])
+    f_c_m1 = float(network_forward(params_collapse_1d, np.array([-1.0]))[0])
+    f_c_p1 = float(network_forward(params_collapse_1d, np.array([+1.0]))[0])
+
+    print("=== OVERLAY DIAGNOSTICS (y-axis) ===")
+    print(f"t_collapse={t_collapse}")
+    print(f"rich g(t): f(-1)={g_r_m1:.6f}, f(+1)={g_r_p1:.6f}")
+    print(f"collapse:  f(-1)={f_c_m1:.6f}, f(+1)={f_c_p1:.6f}")
+    print(f"max|rich-collapse| on grid = {float(np.max(np.abs(g_rich - f_col))):.6e}")
+    print("===================================\n")
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(t_plot, g_rich, label="Rich (g(t)=f((t,0,...,0))) at collapse")
+    plt.plot(t_plot, f_col, "--", label="Collapsed (1D 2-ReLU)")
+    plt.axhline(0.0, linestyle="--")
+    plt.scatter([-1.0, +1.0], [g_r_m1, g_r_p1], s=80, marker="X", label="axis points (rich)")
+    plt.scatter([-1.0, +1.0], [f_c_m1, f_c_p1], s=80, marker="o", label="axis points (collapse)")
+    plt.xlabel("t (y-axis coordinate)")
+    plt.ylabel("value")
+    plt.title(f"Overlay on y-axis: rich projection + 1D collapse, t={t_collapse}")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    plt.close()
+    print("Saved overlay plot to:", save_path)
+
+# ------------------------------------------------------------
+# Main experiment (FULL function)
+# ------------------------------------------------------------
 def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     k: int = 20,
     d: int = 10,
-    n: int = 1000,
-    radius: float = 0.01,
     learning_rate: float = 0.01,
-    # max_pre_collapse_iters: int = 1_000_000,
     max_pre_collapse_iters: int = 500_000,
     post_collapse_iters: int = 1_000_000,
     collapse_loss_threshold: float = 1e-12,
     seed: int = 42,
-    # track_every: int = 100_000,
     track_every: int = 1000,
     act_eps: float = 1e-9,
     root_x_min: float = -2.0,
     root_x_max: float = 2.0,
     root_grid_num: int = 4001,
+    # New: worst-over-projections margin (Monte-Carlo over directions)
+    num_directions: int = 200,
+    worst_proj_seed: int = 123,
 ):
     """
     What this does:
 
-    1) Train a rich 1D k-ReLU network on two points x={-1,+1}, y={-1,+1}
-       until BOTH:
-         - every neuron is active on exactly one of the two points (single-point-only),
-         - exponential loss is tiny (loss < collapse_loss_threshold),
-       OR until max_pre_collapse_iters.
+    1) Sample two d-dimensional points:
+         - sample x ∈ R^{d-1} on sphere radius sqrt(d)
+         - sample y ∈ {±1}
+         - point is (y, x)
 
-    2) Collapse (distill) the rich network to a 2-ReLU 1D network:
-         f(x) = ReLU(w1 x + b1) - ReLU(w2 x + b2)   (v=[+1,-1])
-       using your existing collapse_to_2relu_1d_with_margin_match(...).
+       IMPORTANT (current codebase assumption):
+       Your NetworkParams enforces len(w)=len(b)=len(v)=k, i.e. a 1D ReLU network.
+       Therefore, we train the "rich" network on the y-coordinate only:
+           x_1d = X_full[:,0]  (which equals the sampled labels by construction).
 
-    3) Save overlay plot at collapse time:
-         debug_projection_with_collapse_overlay.png
+    2) Collapse (distill) the rich 1D network to a 1D 2-ReLU network.
 
-    4) Continue training BOTH networks in parallel for post_collapse_iters,
-       and plot a GEOMETRIC projection margin defined by you:
-         - find x0 where f(x0)=0 (x-axis crossing on 1D projection),
-         - margin = min(|x0+1|, |x0-1|)   (distance to nearest of ±1).
+    3) Track two rich margins over training (global iteration axis):
+       - "Geom margin (rich projection on y)" via root-distance on the 1D function f(x).
+       - "Geom margin (rich, worst over projections)" = approximate minimum over random
+         directions u of min_i |t0 - <u, X_i>| where t0 is a root of the (rich) decision
+         function along the line (see helper worst_projection_geometric_margin_rich).
 
-       IMPORTANT: The rich margin curve is shown from iteration 0 (init),
-       and the collapsed curve starts at t_collapse.
-       A vertical RED line is drawn at t=t_collapse.
+       Track also collapsed margin as before.
 
-       Saved to:
-         debug_geom_margin_root_distance.png
+    4) Save:
+       - debug_projection_with_collapse_overlay.png
+       - debug_geom_margin_root_distance.png  (original)
+       - debug_geom_margin_root_distance_with_worst_projection.png (new combined plot)
     """
 
     rng = np.random.default_rng(seed)
@@ -1835,55 +2567,26 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         loss = float(exponential_loss(y, network_forward(new_params, x)))
         return new_params, loss
 
-    def overlay_plot_rich_vs_collapse_1d(
-        params_rich: "NetworkParams",
-        params_collapse_1d: "NetworkParams",
-        t_collapse: int,
-        save_path: str,
-    ):
-        x_plot = np.linspace(-2.0, 2.0, 800)
-        f_rich = network_forward(params_rich, x_plot).astype(float)
-        f_col = network_forward(params_collapse_1d, x_plot).astype(float)
+    # -----------------------------
+    # STEP 1: dataset (two points in R^d)
+    # -----------------------------
+    X_full, y_full = sample_points_y_times_sphere(
+        d=d,
+        n_points=2,
+        seed=seed + 12345,
+        ensure_opposite=True,
+    )
 
-        f_r_m1 = float(network_forward(params_rich, np.array([-1.0]))[0])
-        f_r_p1 = float(network_forward(params_rich, np.array([+1.0]))[0])
-        f_c_m1 = float(network_forward(params_collapse_1d, np.array([-1.0]))[0])
-        f_c_p1 = float(network_forward(params_collapse_1d, np.array([+1.0]))[0])
+    # Train 1D network on y-coordinate only (collapse is on y).
+    x_1d = X_full[:, 0].astype(float)  # in {±1}
+    y = y_full.astype(float)
 
-        print("=== OVERLAY DIAGNOSTICS (1D) ===")
-        print(f"t_collapse={t_collapse}")
-        print(f"rich:     f(-1)={f_r_m1:.6f}, f(+1)={f_r_p1:.6f}")
-        print(f"collapse: f(-1)={f_c_m1:.6f}, f(+1)={f_c_p1:.6f}")
-        print(f"max|rich-collapse| on grid = {float(np.max(np.abs(f_rich - f_col))):.6e}")
-        print("===============================\n")
-
-        plt.figure(figsize=(10, 6))
-        plt.plot(x_plot, f_rich, label="Projection (rich f(x) at collapse)")
-        plt.plot(x_plot, f_col, "--", label="Collapse (1D 2-ReLU)")
-        plt.axhline(0.0, linestyle="--")
-        plt.scatter([-1.0, +1.0], [f_r_m1, f_r_p1], s=80, marker="X", label="train points (rich)")
-        plt.scatter([-1.0, +1.0], [f_c_m1, f_c_p1], s=80, marker="o", label="train points (collapse)")
-        plt.xlabel("x")
-        plt.ylabel("f")
-        plt.title(f"Overlay: rich projection + 1D collapse, t={t_collapse}")
-        plt.grid(True)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=200)
-        plt.close()
-        print("Saved overlay plot to:", save_path)
+    print("Train points X_full (shape (2,d)):")
+    print(X_full)
+    print("Train labels y:", y)
 
     # -----------------------------
-    # STEP 1: dataset (two points)
-    # -----------------------------
-    X_full = np.zeros((2, d), dtype=float)
-    y = np.array([-1.0, +1.0], dtype=float)
-    X_full[0, 0] = -1.0
-    X_full[1, 0] = +1.0
-    x_1d = X_full[:, 0].astype(float)  # [-1, +1]
-
-    # -----------------------------
-    # STEP 2: init rich network
+    # STEP 2: init rich network (1D)
     # -----------------------------
     while True:
         v = rng.choice([-1.0, 1.0], size=k).astype(float)
@@ -1896,24 +2599,36 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
 
     print_params("INIT rich network (1D He init)", params_rich, max_print=10)
 
-    f0 = network_forward(params_rich, x_1d)
+    f0 = network_forward(params_rich, x_1d).astype(float).reshape(-1)
     L0 = float(exponential_loss(y, f0))
     print("At init:")
-    print("  f(x_1d) =", f0)
-    print("  y*f     =", y * f0)
-    print("  loss    =", f"{L0:.6e}\n")
+    print("  x_1d     =", x_1d)
+    print("  f(x_1d)  =", f0)
+    print("  y*f      =", y * f0)
+    print("  loss     =", f"{L0:.6e}\n")
 
     # -----------------------------
-    # Track geom margin for RICH from the very beginning
-    # (global iteration axis)
+    # Track margins for rich from the very beginning (global iteration axis)
     # -----------------------------
     global_iters = [0]
+
+    # Rich "y-projection" geometric margin (your existing root-distance)
     try:
         x0_init = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
         m_init = geometric_margin_from_root(x0_init)
     except RuntimeError:
         x0_init, m_init = np.nan, np.nan
     rich_geom_hist = [m_init]
+
+    # Rich "worst over projections" geometric margin (approx over random directions)
+    mw_init = worst_projection_geometric_margin_rich(
+        params_rich=params_rich,
+        X_train=X_full,
+        num_directions=num_directions,
+        seed=worst_proj_seed,
+        root_grid_num=root_grid_num,
+    )
+    rich_worstproj_hist = [mw_init]
 
     # -----------------------------
     # STEP 3: pre-collapse training
@@ -1927,19 +2642,32 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         num_dead, num_single, num_both = count_single_point_only_neurons(params_rich, x_1d, act_eps=act_eps)
 
         if t % track_every == 0 or t == 1:
-            # log + record rich geom margin along the way
-            f = network_forward(params_rich, x_1d)
-            if t%100_000 == 0: 
-                print(f"[pre t={t}] loss={loss:.3e} | f={f} | y*f={y*f} | "
-                    f"neurons(single={num_single}, both={num_both}, dead={num_dead})")
+            if t % 100_000 == 0:
+                f = network_forward(params_rich, x_1d).astype(float).reshape(-1)
+                print(
+                    f"[pre t={t}] loss={loss:.3e} | f={f} | y*f={y*f} | "
+                    f"neurons(single={num_single}, both={num_both}, dead={num_dead})"
+                )
 
+            # Record rich y-projection geom margin
             try:
                 x0 = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
                 m = geometric_margin_from_root(x0)
             except RuntimeError:
                 m = np.nan
+
+            # Record rich worst-projection geom margin
+            mw = worst_projection_geometric_margin_rich(
+                params_rich=params_rich,
+                X_train=X_full,
+                num_directions=num_directions,
+                seed=worst_proj_seed,
+                root_grid_num=root_grid_num,
+            )
+
             global_iters.append(t)
             rich_geom_hist.append(m)
+            rich_worstproj_hist.append(mw)
 
         # stop criterion
         if (num_single == params_rich.k) and (loss < loss_gate):
@@ -1952,29 +2680,32 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         print("WARNING: did not reach (single-point-only AND tiny-loss) within max_pre_collapse_iters.")
         print(f"Proceeding to collapse at t={t_collapse}.\n")
 
-    # Make sure we recorded a point exactly at t_collapse (useful for the vertical line)
+    # Ensure we recorded exactly at t_collapse
     if global_iters[-1] != t_collapse:
         try:
             x0 = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
             m = geometric_margin_from_root(x0)
         except RuntimeError:
             m = np.nan
+
+        mw = worst_projection_geometric_margin_rich(
+            params_rich=params_rich,
+            X_train=X_full,
+            num_directions=num_directions,
+            seed=worst_proj_seed,
+            root_grid_num=root_grid_num,
+        )
+
         global_iters.append(t_collapse)
         rich_geom_hist.append(m)
+        rich_worstproj_hist.append(mw)
 
     print(f"\n*** COLLAPSE at t={t_collapse} ***\n")
     print_params("rich params at collapse", params_rich, max_print=10)
 
     # -----------------------------
-    # STEP 4: collapse to 2-ReLU
+    # STEP 4: collapse to 2-ReLU (1D)
     # -----------------------------
-    # params_collapse_1d, collapse_info = collapse_to_2relu_1d_with_margin_match(
-    #     params_rich=params_rich,
-    #     x_fit=x_1d,
-    #     y_fit=y,
-    #     distill_iters=20000,
-    #     distill_lr=0.01,
-    # )
     params_collapse_1d, collapse_info = collapse_2relu_1d_with_3_constraints_enum(
         params_rich=params_rich,
         x_fit=x_1d,
@@ -1982,30 +2713,18 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         x0_search_min=root_x_min,
         x0_search_max=root_x_max,
         x0_search_num=root_grid_num,
-)
-    # ===== GEOMETRIC MARGIN AT COLLAPSE =====
+    )
 
-    # rich
+    # Geometric margins at collapse
     try:
-        x0_rich = find_root_on_grid_1d(
-            params_rich,
-            x_min=root_x_min,
-            x_max=root_x_max,
-            num=root_grid_num,
-        )
+        x0_rich = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
         margin_rich_geom = geometric_margin_from_root(x0_rich)
     except RuntimeError:
         x0_rich = np.nan
         margin_rich_geom = np.nan
 
-    # collapse
     try:
-        x0_col = find_root_on_grid_1d(
-            params_collapse_1d,
-            x_min=root_x_min,
-            x_max=root_x_max,
-            num=root_grid_num,
-        )
+        x0_col = find_root_on_grid_1d(params_collapse_1d, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
         margin_col_geom = geometric_margin_from_root(x0_col)
     except RuntimeError:
         x0_col = np.nan
@@ -2024,7 +2743,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     print("===============================================================\n")
 
     # -----------------------------
-    # STEP 5: overlay at collapse time (your "good" plot)
+    # STEP 5: overlay at collapse time
     # -----------------------------
     save_overlay_path = "debug_projection_with_collapse_overlay.png"
     overlay_plot_rich_vs_collapse_1d(
@@ -2036,7 +2755,6 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
 
     # -----------------------------
     # STEP 6: post-collapse training in parallel
-    # Track geom margin for COLLAPSED starting at t_collapse
     # -----------------------------
     col_iters = [t_collapse]
     try:
@@ -2056,37 +2774,44 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
             w2 = float(params_collapse_1d.w[1])
             b2 = float(params_collapse_1d.b[1])
 
-            # optional: גם להדפיס את ה-root והמרג׳ין הגיאומטרי
             try:
-                x0 = find_root_on_grid_1d(
-                    params_collapse_1d,
-                    x_min=root_x_min,
-                    x_max=root_x_max,
-                    num=root_grid_num,
-                )
+                x0 = find_root_on_grid_1d(params_collapse_1d, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
                 margin_geom = geometric_margin_from_root(x0)
             except RuntimeError:
                 x0 = np.nan
                 margin_geom = np.nan
 
-            print(f"[post t={t_post}] "
+            print(
+                f"[post t={t_post}] "
                 f"w1={w1:.6f}, b1={b1:.6f} | "
                 f"w2={w2:.6f}, b2={b2:.6f} | "
-                f"x0={x0:.6f}, geom_margin={margin_geom:.6f}")
+                f"x0={x0:.6f}, geom_margin={margin_geom:.6f}"
+            )
 
         if t_post % track_every == 0 or t_post == 1:
             t_global = t_collapse + t_post
 
-            # rich
+            # rich y-projection margin
             try:
                 x0r = find_root_on_grid_1d(params_rich, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
                 mr = geometric_margin_from_root(x0r)
             except RuntimeError:
                 mr = np.nan
+
+            # rich worst-projection margin
+            mw = worst_projection_geometric_margin_rich(
+                params_rich=params_rich,
+                X_train=X_full,
+                num_directions=num_directions,
+                seed=worst_proj_seed,
+                root_grid_num=root_grid_num,
+            )
+
             global_iters.append(t_global)
             rich_geom_hist.append(mr)
+            rich_worstproj_hist.append(mw)
 
-            # collapse
+            # collapse margin
             try:
                 x0c = find_root_on_grid_1d(params_collapse_1d, x_min=root_x_min, x_max=root_x_max, num=root_grid_num)
                 mc = geometric_margin_from_root(x0c)
@@ -2095,31 +2820,51 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
             col_iters.append(t_global)
             col_geom_hist.append(mc)
 
-            if t_post%100_000 == 0:
-                print(f"[post t={t_post}] (global={t_global}) loss_r={loss_r:.3e} loss_c={loss_c:.3e} | "
-                  f"m_rich={mr:.6f} m_col={mc:.6f}")
+            if t_post % 100_000 == 0:
+                print(
+                    f"[post t={t_post}] (global={t_global}) loss_r={loss_r:.3e} loss_c={loss_c:.3e} | "
+                    f"m_rich={mr:.6f} m_worstproj={mw:.6f} m_col={mc:.6f}"
+                )
 
     # -----------------------------
-    # STEP 7: plot geom margin from init + vertical red line at collapse join
+    # STEP 7: original plot (kept)
     # -----------------------------
     save_margin_path = "debug_geom_margin_root_distance.png"
     plt.figure(figsize=(10, 6))
-
-    plt.plot(global_iters, rich_geom_hist, label="Geom margin (rich projection)")
+    plt.plot(global_iters, rich_geom_hist, label="Geom margin (rich projection on y)")
     plt.plot(col_iters, col_geom_hist, label="Geom margin (collapsed)")
-
     plt.axvline(x=t_collapse, color="red", linestyle="--", linewidth=2, label="collapse join")
-
     plt.ylim(bottom=0.0)
     plt.xlabel("Training iterations (global)")
-    plt.ylabel("margin = min(|x0+1|, |x0-1|)")
-    plt.title("Geometric margin via root-distance: rich from init + collapse join")
+    plt.ylabel("margin")
+    plt.title("Geometric margin via root-distance: rich (y) + collapse join")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
     plt.savefig(save_margin_path, dpi=200)
     plt.close()
     print("Saved geometric margin plot to:", save_margin_path)
+
+    # -----------------------------
+    # STEP 8: new combined plot with worst-projection margin (new image)
+    # -----------------------------
+    save_margin_path2 = "debug_geom_margin_root_distance_with_worst_projection.png"
+    plt.figure(figsize=(10, 6))
+    plt.plot(global_iters, rich_geom_hist, label="Geom margin (rich projection on y)")
+    plt.plot(global_iters, rich_worstproj_hist, label="Geom margin (rich, worst over projections)")
+    plt.plot(col_iters, col_geom_hist, label="Geom margin (collapsed)")
+    plt.plot(global_iters, rich_worstproj_hist, label="Geom margin (rich, worst over projections)")
+    plt.axvline(x=t_collapse, color="red", linestyle="--", linewidth=2, label="collapse join")
+    plt.ylim(bottom=0.0)
+    plt.xlabel("Training iterations (global)")
+    plt.ylabel("margin")
+    plt.title("Geometric margins: y-projection vs worst-projection (rich) + collapse")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_margin_path2, dpi=200)
+    plt.close()
+    print("Saved combined margin plot to:", save_margin_path2)
 
     return {
         "t_collapse": int(t_collapse),
@@ -2128,11 +2873,18 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         "collapse_info": collapse_info,
         "overlay_plot_path": save_overlay_path,
         "geom_margin_plot_path": save_margin_path,
+        "geom_margin_plot_path_worstproj": save_margin_path2,
         "geom_margin_history": {
             "iters_rich": np.array(global_iters, dtype=int),
             "m_rich": np.array(rich_geom_hist, dtype=float),
+            "m_rich_worstproj": np.array(rich_worstproj_hist, dtype=float),
             "iters_collapse": np.array(col_iters, dtype=int),
             "m_collapse": np.array(col_geom_hist, dtype=float),
             "t_collapse": int(t_collapse),
+        },
+        "train_data": {
+            "X_full": X_full,
+            "y": y,
+            "x_1d_used_for_training": x_1d,
         },
     }
