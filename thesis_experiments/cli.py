@@ -49,9 +49,9 @@ Examples:
         "--experiment",
         "-e",
         nargs="+",
-        choices=["1", "2", "3", "4", "5a", "5b", "5c", "5d", "5f", "6e", "all", "init"],
+        choices=["1", "2", "3", "4", "5a", "5b", "5c", "5d", "5f", "6e", "7", "all", "init"],
         default=["all"],
-        help="Experiment(s) to run: 1, 2, 3, 4, 5a, 5b, 5c, 5d, 5f, 6e, all, or init",
+        help="Experiment(s) to run: 1, 2, 3, 4, 5a, 5b, 5c, 5d, 5f, 6e, 7, all, or init",
     )
     parser.add_argument("--list-experiments", "-l", action="store_true", help="List all available experiments and exit")
 
@@ -108,7 +108,8 @@ Examples:
         experiment_5c_margin_convergence_rate,
         experiment_5f_hit_linear_condition_with_low_loss,
         experiment_5d_mixture,
-        experiment_6e_overparam_cluster_then_collapse_compare_margins
+        experiment_6e_overparam_cluster_then_collapse_compare_margins,
+        experiment_7_big_train_project_distill_small_parallel
     )
 
     print("=" * 60)
@@ -214,6 +215,16 @@ Examples:
         max_iterations=args.max_iterations if args.max_iterations is not None else 10_000_000,
         learning_rate=lr,
         seed=args.seed,
+    )
+
+    if "7" in experiments_to_run:
+        experiment_7_big_train_project_distill_small_parallel(
+        k=20, d=10, n_points=1000,
+        lr_big=1e-3, lr_small=1e-3,
+        max_pretrain_iters=args.iterations if args.iterations else 200_000,
+        post_iters=200_000,
+        track_every=1000,
+        seed= args.seed if args.seed else 42,
     )
 
     print("\n" + "=" * 60)

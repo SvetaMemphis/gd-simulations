@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Callable
+
 import csv
 
 from .core import network_forward, train_gd, exponential_loss, gradient_descent_step, NetworkParams, compute_gradients
@@ -1289,6 +1290,137 @@ def experiment_5f_hit_linear_condition_with_low_loss(
         print(" - experiment_5f_metric_hist.csv")
 
 # # 
+
+def collapse_2relu_1d_with_3_constraints_signs(
+    params_rich: "NetworkParams",
+    x_fit: np.ndarray,              # [-1, +1]
+    y_fit: np.ndarray,              # [-1, +1] (sanity)
+    x0_search_min: float = -2.0,
+    x0_search_max: float =  2.0,
+    x0_search_num: int = 4001,
+    act_eps: float = 1e-9,
+    d: int = 10,
+    h1_grid_num: int = 2000,
+    h1_min: float = -0.999,
+    h1_max: float = -1e-4,
+) -> Tuple["NetworkParams", Dict]:
+    """
+    Build f(t)=ReLU(w1 t + b1) - ReLU(w2 t + b2) with:
+      - f(+1)=g(+1), f(-1)=g(-1), f(t0)=0
+      - single-point-only: neuron1 active only at +1, neuron2 active only at -1
+      - sign constraints: w1>0, b1>0, w2<0, b2>0
+    """
+
+    x_fit = np.asarray(x_fit, dtype=float).reshape(-1)
+    if x_fit.shape[0] != 2:
+        raise ValueError("Expected exactly 2 fit points (typically [-1,+1]).")
+
+    def g(tt: np.ndarray) -> np.ndarray:
+        tt = np.asarray(tt, dtype=float).reshape(-1)
+        X_axis = np.zeros((tt.shape[0], d), dtype=float)
+        X_axis[:, 0] = tt
+        return network_forward(params_rich, X_axis).astype(float).reshape(-1)
+
+    # teacher root
+    t0 = find_root_on_grid_1d_fn(g, x_min=x0_search_min, x_max=x0_search_max, num=x0_search_num)
+
+    gp = float(g(np.array([+1.0]))[0])  # >0
+    gm = float(g(np.array([-1.0]))[0])  # <0
+    if not (gp > 0 and gm < 0):
+        raise RuntimeError(f"Need g(+1)>0 and g(-1)<0. Got g(+1)={gp:.6f}, g(-1)={gm:.6f}.")
+
+    B = -gm  # positive
+
+    # We want h1 < 0 < h2, and also h1 < t0 < h2 for the f(t0)=0 derivation
+    # We'll search h1 in (-1,0) and compute h2 analytically.
+    best = None
+    best_info = None
+
+    h1_grid = np.linspace(h1_min, h1_max, h1_grid_num)
+    for h1 in h1_grid:
+        # ensure single-point-only for neuron1: inactive at -1, active at +1
+        # with hinge h1, neuron1 pre1(t)=w1(t-h1), so inactive at -1 iff -1<=h1
+        if h1 < -1.0 + 1e-12:
+            continue
+
+        # C = gp * (t0-h1)/(1-h1)
+        denom1 = (1.0 - h1)
+        if denom1 <= 1e-12:
+            continue
+        C = gp * (t0 - h1) / denom1
+
+        # Need B - C > 0 to make h2 finite and typically positive
+        if (B - C) <= 1e-12:
+            continue
+
+        h2 = (B * t0 + C) / (B - C)
+
+        # enforce hinge location for neuron2 to get b2>0 and inactive at +1
+        # want 0<h2<1 and also t0<h2 (for both active at t0)
+        if not (h2 > 1e-6 and h2 < 1.0 - 1e-6):
+            continue
+        if not (h1 < t0 < h2):
+            continue
+
+        # Build slopes from endpoint constraints
+        w1 = gp / (1.0 - h1)                # >0
+        b1 = -w1 * h1                       # >0 because h1<0
+        w2 = -B / (1.0 + h2)                # <0
+        b2 = -w2 * h2                       # >0 because -w2>0 and h2>0
+
+        # strict activity checks
+        pre1_m1 = w1 * (-1.0) + b1
+        pre1_p1 = w1 * (+1.0) + b1
+        pre2_m1 = w2 * (-1.0) + b2
+        pre2_p1 = w2 * (+1.0) + b2
+
+        if not (pre1_p1 > act_eps and pre1_m1 <= act_eps):
+            continue
+        if not (pre2_m1 > act_eps and pre2_p1 <= act_eps):
+            continue
+
+        # Verify constraints numerically
+        params_col = NetworkParams(
+            w=np.array([[w1], [w2]], dtype=float),
+            b=np.array([b1, b2], dtype=float),
+            v=np.array([+1.0, -1.0], dtype=float),
+        )
+
+        f_p1 = float(network_forward(params_col, np.array([+1.0]).reshape(-1, 1))[0])
+        f_m1 = float(network_forward(params_col, np.array([-1.0]).reshape(-1, 1))[0])
+        f_t0 = float(network_forward(params_col, np.array([t0]).reshape(-1, 1))[0])
+
+        err = abs(f_p1 - gp) + abs(f_m1 - gm) + abs(f_t0 - 0.0)
+
+        best = err
+        best_info = {
+            "t0_teacher": float(t0),
+            "g_plus1": float(gp),
+            "g_minus1": float(gm),
+            "h1": float(h1),
+            "h2": float(h2),
+            "w1": float(w1),
+            "b1": float(b1),
+            "w2": float(w2),
+            "b2": float(b2),
+            "checks": {
+                "f(+1)": f_p1,
+                "f(-1)": f_m1,
+                "f(t0)": f_t0,
+                "pre1(-1)": float(pre1_m1),
+                "pre1(+1)": float(pre1_p1),
+                "pre2(-1)": float(pre2_m1),
+                "pre2(+1)": float(pre2_p1),
+            },
+            "constraint_error": float(err),
+        }
+        return params_col, best_info
+
+    raise RuntimeError(
+        "Failed to find hinges (h1<0, h2>0) that satisfy all constraints. "
+        "Try widening search ranges or increasing h1_grid_num."
+    )
+
 def collapse_to_2relu_1d_with_margin_match(
     params_rich: NetworkParams,
     x_fit: np.ndarray,
@@ -1674,9 +1806,9 @@ def collapse_2relu_1d_with_3_constraints_enum(
 
     # Require t0 strictly between (-1,+1) for strict single-point-only on both sides.
     # If t0 is too close to an endpoint, strict inactivity might break numerically.
-    if not (-1.0 + 1e-6 < t0 < 1.0 - 1e-6):
-        # You can relax this if you want, but single-point-only becomes numerically fragile.
-        raise RuntimeError(f"Root t0={t0:.6f} is not strictly inside (-1,1). Cannot guarantee single-point-only.")
+    # if not (-1.0 + 1e-6 < t0 < 1.0 - 1e-6):
+    #     # You can relax this if you want, but single-point-only becomes numerically fragile.
+    #     raise RuntimeError(f"Root t0={t0:.6f} is not strictly inside (-1,1). Cannot guarantee single-point-only.")
 
     # Neuron 0: hinge at t0, active at +1 only
     # pre1(t) = w1 (t - t0)
@@ -2373,24 +2505,106 @@ def worst_projection_geometric_margin_rich(
 # ------------------------------------------------------------
 # External sampler (data generation)
 # ------------------------------------------------------------
+# def sample_points_y_times_sphere(
+#     d: int,
+#     n_points: int = 2,
+#     seed: Optional[int] = None,
+#     ensure_opposite: bool = True,
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     """
+#     Sample training points in R^d as follows:
+#       1) Sample x in R^{d-1} uniformly on the sphere of radius sqrt(d).
+#       2) Sample y in {+1,-1}.
+#       3) Form the point: (y, x_1, ..., x_{d-1}).
+
+#     Returns:
+#       X: shape (n_points, d)
+#       y: shape (n_points,)
+#     """
+#     if d < 2:
+#         raise ValueError("d must be >= 2 (first coordinate is y, plus d-1 sphere coordinates).")
+
+#     rng = np.random.default_rng(seed)
+
+#     if ensure_opposite and n_points == 2:
+#         y = np.array([-1.0, +1.0], dtype=float)
+#         rng.shuffle(y)
+#     else:
+#         y = rng.choice([-1.0, +1.0], size=n_points).astype(float)
+
+#     z = rng.normal(0.0, 1.0, size=(n_points, d - 1))
+#     norms = np.linalg.norm(z, axis=1, keepdims=True) + 1e-12
+#     x = z / norms
+#     x *= np.sqrt(float(d))
+
+#     X = np.zeros((n_points, d), dtype=float)
+#     X[:, 0] = y
+#     X[:, 1:] = x
+#     return X, y
+
+
+# def sample_points_y_times_sphere(
+#     d: int,
+#     n_points: int = 2,
+#     seed: Optional[int] = None,
+#     ensure_opposite: bool = True,
+#     fixed_second_coord: Optional[float] = None,  # 👈 NEW
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     """
+#     Sample training points in R^d.
+
+#     If fixed_second_coord is None:
+#         1) Sample x in R^{d-1} uniformly on sphere radius sqrt(d).
+#         2) Form (y, x_1, ..., x_{d-1})
+
+#     If fixed_second_coord is not None:
+#         Return points of the form:
+#             (y, fixed_second_coord, 0, ..., 0)
+#     """
+
+#     if d < 2:
+#         raise ValueError("d must be >= 2.")
+
+#     rng = np.random.default_rng(seed)
+
+#     if ensure_opposite and n_points == 2:
+#         y = np.array([-1.0, +1.0], dtype=float)
+#         rng.shuffle(y)
+#     else:
+#         y = rng.choice([-1.0, +1.0], size=n_points).astype(float)
+
+#     X = np.zeros((n_points, d), dtype=float)
+#     X[:, 0] = y
+
+#     # -----------------------------------------
+#     # CASE 1: fixed second coordinate
+#     # -----------------------------------------
+#     if fixed_second_coord is not None:
+#         X[:, 1] = float(fixed_second_coord)
+#         # all other coords already zero
+#         return X, y
+
+#     # -----------------------------------------
+#     # CASE 2: original sphere sampling
+#     # -----------------------------------------
+#     z = rng.normal(0.0, 1.0, size=(n_points, d - 1))
+#     norms = np.linalg.norm(z, axis=1, keepdims=True) + 1e-12
+#     x = z / norms
+#     x *= np.sqrt(float(d))
+
+#     X[:, 1:] = x
+#     return X, y
+
 def sample_points_y_times_sphere(
     d: int,
     n_points: int = 2,
     seed: Optional[int] = None,
     ensure_opposite: bool = True,
+    fixed_second_coord: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Sample training points in R^d as follows:
-      1) Sample x in R^{d-1} uniformly on the sphere of radius sqrt(d).
-      2) Sample y in {+1,-1}.
-      3) Form the point: (y, x_1, ..., x_{d-1}).
 
-    Returns:
-      X: shape (n_points, d)
-      y: shape (n_points,)
-    """
-    if d < 2:
-        raise ValueError("d must be >= 2 (first coordinate is y, plus d-1 sphere coordinates).")
+    if d < 3:
+        raise ValueError("d must be >= 3 (need y + fixed coord + sphere coords).")
 
     rng = np.random.default_rng(seed)
 
@@ -2400,19 +2614,29 @@ def sample_points_y_times_sphere(
     else:
         y = rng.choice([-1.0, +1.0], size=n_points).astype(float)
 
+    X = np.zeros((n_points, d), dtype=float)
+    X[:, 0] = y
+
+    if fixed_second_coord is not None:
+        X[:, 1] = float(fixed_second_coord)
+
+        # sample the remaining coords on a sphere in R^{d-2} with radius sqrt(d)
+        z = rng.normal(0.0, 1.0, size=(n_points, d - 2))
+        norms = np.linalg.norm(z, axis=1, keepdims=True) + 1e-12
+        x = z / norms
+        x *= np.sqrt(float(d))
+        X[:, 2:] = x
+
+        return X, y
+
+    # original: sphere in R^{d-1}
     z = rng.normal(0.0, 1.0, size=(n_points, d - 1))
     norms = np.linalg.norm(z, axis=1, keepdims=True) + 1e-12
     x = z / norms
     x *= np.sqrt(float(d))
-
-    X = np.zeros((n_points, d), dtype=float)
-    X[:, 0] = y
     X[:, 1:] = x
+
     return X, y
-
-
-
-
 
 # ------------------------------------------------------------
 # Helpers for "collapse is on y"
@@ -2657,7 +2881,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     k: int = 20,
     d: int = 10,
     learning_rate: float = 0.001,
-    max_pre_collapse_iters: int = 500_000,
+    max_pre_collapse_iters: int = 1_000_000,
     post_collapse_iters: int = 1_000_000,
     collapse_loss_threshold: float = 1e-12,
     seed: int = 42,
@@ -2718,6 +2942,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         n_points=2,
         seed=seed + 12345,
         ensure_opposite=True,
+        fixed_second_coord=10
     )
 
     print("Train points X_full (shape (2,d)):")
@@ -2857,7 +3082,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
         rich_worstproj_hist.append(m_worst)
 
     print(f"\n*** COLLAPSE at t={t_collapse} ***\n")
-
+    print(f"Parameters at collapse:\n{params_rich}")
     gp = float(forward_rich_on_y_axis(params_rich, np.array([+1.0]), d)[0])
     gm = float(forward_rich_on_y_axis(params_rich, np.array([-1.0]), d)[0])
 
@@ -2912,7 +3137,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     # -----------------------------
     # STEP 5: overlay at collapse time on y-axis
     # -----------------------------
-    save_overlay_path = "debug_projection_with_collapse_overlay.png"
+    save_overlay_path = f"debug_projection_with_collapse_overlay_{seed}.png"
     overlay_plot_rich_vs_collapse_on_y_axis(
         params_rich=params_rich,
         params_collapse_1d=params_collapse_1d,
@@ -2995,7 +3220,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     # -----------------------------
     # STEP 7: plots
     # -----------------------------
-    save_margin_path = "debug_geom_margin_root_distance.png"
+    save_margin_path = f"debug_geom_margin_root_distance_{seed}.png"
     plt.figure(figsize=(10, 6))
     plt.plot(global_iters, rich_y_geom_hist, label="Geom margin (rich on y-axis)")
     plt.plot(col_iters, col_geom_hist, label="Geom margin (collapsed)")
@@ -3011,7 +3236,7 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
     plt.close()
     print("Saved geometric margin plot to:", save_margin_path)
 
-    save_margin_path2 = "debug_geom_margin_root_distance_with_worst_projection.png"
+    save_margin_path2 = f"debug_geom_margin_root_distance_with_worst_projection_{seed}.png"
     plt.figure(figsize=(10, 6))
     plt.plot(global_iters, rich_y_geom_hist, label="Geom margin (rich on y-axis)")
     plt.plot(global_iters, rich_worstproj_hist, label="Geom margin (rich, worst over projections)")
@@ -3049,5 +3274,607 @@ def experiment_6e_overparam_cluster_then_collapse_compare_margins(
             "y": y,
             "t_axis": t_axis,
             "y_axis": y_axis,
+        },
+    }
+
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import Dict, Tuple, Optional
+
+# assumes these already exist in your package:
+# - network_forward, compute_gradients, exponential_loss, NetworkParams
+# - sample_points_y_times_sphere (we'll call it with n_points=1000)
+# - find_root_on_grid_1d_fn (you already have it)
+
+
+def _unit_u_diag_d(d: int) -> np.ndarray:
+    """u = (1,1,0,...,0)/||.|| in R^d."""
+    u = np.zeros(d, dtype=float)
+    u[0] = 1.0
+    u[1] = 1.0
+    u /= (np.linalg.norm(u) + 1e-12)
+    return u
+
+
+def _forward_rich_on_line(params_rich: "NetworkParams", s_grid: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """g_big(s) = f_big(s*u)."""
+    s_grid = np.asarray(s_grid, dtype=float).reshape(-1)
+    X_line = s_grid[:, None] * u[None, :]  # (n,d)
+    return network_forward(params_rich, X_line).astype(float).reshape(-1)
+
+
+def _forward_small2d_on_line(params_small2d: "NetworkParams", s_grid: np.ndarray) -> np.ndarray:
+    """g_small(s) = f_small( s*(1,1)/sqrt(2) ) in R^2."""
+    s_grid = np.asarray(s_grid, dtype=float).reshape(-1)
+    u2 = np.array([1.0, 1.0], dtype=float)
+    u2 /= (np.linalg.norm(u2) + 1e-12)
+    X_line = s_grid[:, None] * u2[None, :]  # (n,2)
+    return network_forward(params_small2d, X_line).astype(float).reshape(-1)
+
+
+def _signed_margin(params: "NetworkParams", X: np.ndarray, y: np.ndarray) -> float:
+    """m = min_i y_i f(X_i)."""
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    f = network_forward(params, X).astype(float).reshape(-1)
+    return float(np.min(y * f))
+
+
+def _gd_step_wb_only(params: "NetworkParams", X: np.ndarray, y: np.ndarray, lr: float):
+    """One GD step updating only w,b (v frozen)."""
+    grads = compute_gradients(params, X, y)
+    new_params = NetworkParams(
+        w=params.w - lr * grads.w,
+        b=params.b - lr * grads.b,
+        v=params.v.copy(),
+    )
+    loss = float(exponential_loss(y, network_forward(new_params, X)))
+    return new_params, loss
+
+
+def distill_2relu_student_to_target(
+    target_fn,          # function: s_grid -> target values
+    s_fit: np.ndarray,  # 1D grid
+    distill_iters: int = 20000,
+    distill_lr: float = 0.01,
+) -> Tuple["NetworkParams", Dict]:
+    """
+    Distill a 2-ReLU 1D student:
+        f(s) = ReLU(w1 s + b1) - ReLU(w2 s + b2)
+    to match target_fn(s) over s_fit by MSE.
+    Returns params with w shape (2,1) so it works with network_forward(..., s.reshape(-1,1)).
+    """
+    s_fit = np.asarray(s_fit, dtype=float).reshape(-1)
+    f_target = target_fn(s_fit).astype(float).reshape(-1)
+    invN = 1.0 / float(s_fit.size)
+
+    # simple init
+    w1, b1 = 1.0, 0.0
+    w2, b2 = -1.0, 0.0
+
+    best = (w1, b1, w2, b2)
+    best_mse = float("inf")
+
+    for _ in range(distill_iters):
+        z1 = w1 * s_fit + b1
+        z2 = w2 * s_fit + b2
+        a1 = (z1 > 0).astype(float)
+        a2 = (z2 > 0).astype(float)
+
+        f = np.maximum(0.0, z1) - np.maximum(0.0, z2)
+        r = f - f_target
+
+        grad_w1 = invN * np.sum(r * (a1 * s_fit))
+        grad_b1 = invN * np.sum(r * a1)
+        grad_w2 = invN * np.sum(r * (-a2 * s_fit))
+        grad_b2 = invN * np.sum(r * (-a2))
+
+        w1 -= distill_lr * grad_w1
+        b1 -= distill_lr * grad_b1
+        w2 -= distill_lr * grad_w2
+        b2 -= distill_lr * grad_b2
+
+        mse = 0.5 * invN * float(np.sum(r ** 2))
+        if mse < best_mse:
+            best_mse = mse
+            best = (w1, b1, w2, b2)
+
+    w1, b1, w2, b2 = best
+    params_1d = NetworkParams(
+        w=np.array([[w1], [w2]], dtype=float),   # (2,1)
+        b=np.array([b1, b2], dtype=float),       # (2,)
+        v=np.array([+1.0, -1.0], dtype=float),   # (2,)
+    )
+    return params_1d, {"best_mse": float(best_mse), "w1": float(w1), "b1": float(b1), "w2": float(w2), "b2": float(b2)}
+
+
+def embed_1d_student_to_2d(params_1d: "NetworkParams") -> "NetworkParams":
+    """
+    Make a 2D network that acts on s = <u2, x>, u2=(1,1)/sqrt(2):
+        f_2d(x) = f_1d(<u2, x>)
+    """
+    u2 = np.array([1.0, 1.0], dtype=float)
+    u2 /= (np.linalg.norm(u2) + 1e-12)
+
+    W2 = np.zeros((2, 2), dtype=float)
+    W2[0, :] = float(params_1d.w[0, 0]) * u2
+    W2[1, :] = float(params_1d.w[1, 0]) * u2
+
+    return NetworkParams(
+        w=W2,                        # (2,2)
+        b=params_1d.b.copy(),        # (2,)
+        v=params_1d.v.copy(),        # (2,)
+    )
+
+
+def project_rich_to_x_axis(params_rich: NetworkParams) -> NetworkParams:
+    """
+    Returns a new NetworkParams where all weights except index 0 are zero.
+    This creates a true 1D network depending only on x_1.
+    """
+    W_proj = params_rich.w.copy()
+    W_proj[:, 1:] = 0.0  # zero out coordinates 2..d
+
+    return NetworkParams(
+        w=W_proj,
+        b=params_rich.b.copy(),
+        v=params_rich.v.copy(),
+    )
+
+
+def distill_2relu_with_fixed_root(
+    g: Callable[[np.ndarray], np.ndarray],
+    t0: float,
+    t_grid: np.ndarray,
+    *,
+    lr: float = 1e-2,
+    iters: int = 20000,
+    sign_weight: float = 10.0,
+    l2_weight: float = 1e-6,
+    w1_init: float = 1.0,
+    w2_init: float = -1.0,
+    eps: float = 1e-12,
+    return_column_w: bool = True,
+    v: Tuple[float, float] = (1.0, -1.0),
+) -> Tuple[Dict[str, np.ndarray], Dict]:
+    """
+    Student:
+        h(t) = ReLU(w1*(t - t0)) - ReLU(w2*(t - t0))
+
+    Constraints:
+        1. h(t0) = 0        (hard via parameterization)
+        2. h(1) > 0         (soft hinge penalty)
+        3. h(-1) < 0        (soft hinge penalty)
+
+    Objective:
+        minimize (h(1)-g(1))^2 + (h(-1)-g(-1))^2
+    """
+
+    g1 = float(g(np.array([1.0]))[0])
+    gm1 = float(g(np.array([-1.0]))[0])
+
+    def relu(z):
+        return np.maximum(0.0, z)
+
+    def h_val(w1, w2, t):
+        z1 = w1 * (t - t0)
+        z2 = w2 * (t - t0)
+        return relu(z1) - relu(z2), z1, z2
+
+    w1 = float(w1_init)
+    w2 = float(w2_init)
+
+    loss_hist = []
+
+    for _ in range(iters):
+
+        # forward at endpoints
+        h1, z11, z21 = h_val(w1, w2, 1.0)
+        hm1, z1m, z2m = h_val(w1, w2, -1.0)
+
+        # endpoint fitting loss
+        L_fit = (h1 - g1) ** 2 + (hm1 - gm1) ** 2
+
+        # sign hinge penalties
+        pen_pos = max(0.0, -h1+0.5)
+        pen_neg = max(0.0, hm1+0.5)
+        L_sign = sign_weight * (pen_pos ** 2 + pen_neg ** 2)
+
+        # L2 regularization
+        L_reg = 0.5 * l2_weight * (w1 ** 2 + w2 ** 2)
+
+        L = L_fit + L_sign + L_reg
+        loss_hist.append(L)
+
+        # gradients
+        a11 = 1.0 if z11 > 0 else 0.0
+        a21 = 1.0 if z21 > 0 else 0.0
+        a1m = 1.0 if z1m > 0 else 0.0
+        a2m = 1.0 if z2m > 0 else 0.0
+
+        dh1_dw1 = a11 * (1.0 - t0)
+        dh1_dw2 = -a21 * (1.0 - t0)
+        dhm1_dw1 = a1m * (-1.0 - t0)
+        dhm1_dw2 = -a2m * (-1.0 - t0)
+
+        grad_w1 = 2 * (h1 - g1) * dh1_dw1 + 2 * (hm1 - gm1) * dhm1_dw1
+        grad_w2 = 2 * (h1 - g1) * dh1_dw2 + 2 * (hm1 - gm1) * dhm1_dw2
+
+        # sign gradients
+        if pen_pos > 0:
+            grad_w1 += sign_weight * 2 * pen_pos * (-dh1_dw1)
+            grad_w2 += sign_weight * 2 * pen_pos * (-dh1_dw2)
+
+        if pen_neg > 0:
+            grad_w1 += sign_weight * 2 * pen_neg * dhm1_dw1
+            grad_w2 += sign_weight * 2 * pen_neg * dhm1_dw2
+
+        # regularization gradient
+        grad_w1 += l2_weight * w1
+        grad_w2 += l2_weight * w2
+
+        # update
+        w1 -= lr * grad_w1
+        w2 -= lr * grad_w2
+
+    # construct final params
+    b1 = -w1 * t0
+    b2 = -w2 * t0
+
+    w_arr = np.array([[w1], [w2]]) if return_column_w else np.array([w1, w2])
+    b_arr = np.array([b1, b2])
+    v_arr = np.array([v[0], v[1]])
+
+    params_dict = {"w": w_arr, "b": b_arr, "v": v_arr}
+
+    info = {
+        "w1": w1,
+        "w2": w2,
+        "b1": b1,
+        "b2": b2,
+        "h(1)": float(h_val(w1, w2, 1.0)[0]),
+        "h(-1)": float(h_val(w1, w2, -1.0)[0]),
+        "g(1)": g1,
+        "g(-1)": gm1,
+        "loss_final": loss_hist[-1],
+    }
+
+    return params_dict, info
+
+
+def find_root_on_grid_1d_fn(fn, x_min, x_max, num=4001):
+    xg = np.linspace(x_min, x_max, num)
+    fg = np.asarray(fn(xg), dtype=float).reshape(-1)
+
+    s = np.sign(fg)
+    s[s == 0] = 1.0
+    idx = np.where(s[:-1] * s[1:] < 0)[0]
+    if len(idx) == 0:
+        raise RuntimeError(f"No root found in [{x_min},{x_max}]")
+
+    roots = []
+    for i in idx:
+        x1, x2 = float(xg[i]), float(xg[i+1])
+        f1, f2 = float(fg[i]), float(fg[i+1])
+        xr = x1 - f1 * (x2 - x1) / (f2 - f1 + 1e-18)  # linear interp
+        roots.append(xr)
+
+    roots = np.array(roots, dtype=float)
+    return float(roots[np.argmin(np.abs(roots))])  # closest to 0
+
+
+def experiment_7_big_train_project_distill_small_parallel(
+    k: int = 20,
+    d: int = 10,
+    n_points: int = 1000,
+    # seed: int = 43,
+    seed: int = 49,
+    lr_big: float = 1e-3,
+    lr_small: float = 1e-3,
+    max_pretrain_iters: int = 10_000,
+    pretrain_loss_threshold: float = 1e-6,
+    post_iters: int = 200_000,
+    track_every: int = 1000,
+    root_grid_num: int = 4001,
+    distill_s_grid_num: int = 2000,
+    distill_iters: int = 30_000,
+    distill_lr: float = 0.01,
+    save_prefix: str = "experiment_7",
+) -> Dict:
+    """
+    Your requested pipeline:
+
+    1) Train BIG network (k=20,d=10) on n_points (default 1000) until good loss.
+    2) Project BIG to 1D line u=(1,1,0,...)/||.|| : g_big(s)=f_big(su) and plot it.
+    3) Find SMALL 2-neuron net in R^2 that is very close to g_big(s) (via distillation on s-grid),
+       and train it only on two points (1,1) with label +1 and (-1,-1) with label -1.
+       Plot g_big and g_small together.
+    4) Continue training BIG on its full dataset and SMALL on its 2 points in parallel.
+       Track and plot three margins over global iterations:
+         - signed margin of BIG on full data: min_i y_i f_big(X_i)
+         - geometric projection margin of BIG on u-line: min_i |t0 - <u,X_i>| where g_big(t0)=0
+         - geometric margin of SMALL on its line: min(|t0 - sqrt(2)|, |t0 + sqrt(2)|) where g_small(t0)=0
+    """
+
+    rng = np.random.default_rng(seed)
+
+    # -----------------------------
+    # DATA: big dataset (cluster on sphere radius sqrt(d) in last d-1 coords)
+    # -----------------------------
+    X_full, y_full = sample_points_y_times_sphere(
+        d=d,
+        n_points=n_points,
+        seed=seed,
+        ensure_opposite=False,  # ignored for n_points != 2 in your original; ok if you updated it
+        fixed_second_coord=1.4
+    )
+    X_full = np.asarray(X_full, dtype=float)
+    y_full = np.asarray(y_full, dtype=float).reshape(-1)
+
+    print(X_full[:10])
+    # -----------------------------
+    # INIT BIG network
+    # -----------------------------
+    # ensure both signs in v
+    while True:
+        v_big = rng.choice([-1.0, 1.0], size=k).astype(float)
+        if np.any(v_big > 0) and np.any(v_big < 0):
+            break
+
+    W_big = rng.normal(0.0, np.sqrt(2.0 / float(d)), size=(k, d)).astype(float)
+    b_big = np.zeros(k, dtype=float)
+    params_big = NetworkParams(w=W_big, b=b_big, v=v_big)
+
+    # -----------------------------
+    # PRETRAIN BIG
+    # -----------------------------
+    t_join = 0
+    loss_big = float(exponential_loss(y_full, network_forward(params_big, X_full)))
+
+    for t in range(1, max_pretrain_iters + 1):
+        params_big, loss_big = _gd_step_wb_only(params_big, X_full, y_full, lr_big)
+        if (t % 10_000) == 0:
+            print(f"[pretrain big] t={t} loss={loss_big:.3e}")
+        if loss_big < pretrain_loss_threshold:
+            t_join = t
+            break
+
+    if t_join == 0:
+        t_join = max_pretrain_iters
+        print(f"[pretrain big] did not reach loss<{pretrain_loss_threshold}; join at t={t_join} (loss={loss_big:.3e})")
+    else:
+        print(f"[pretrain big] reached loss<{pretrain_loss_threshold} at t={t_join} (loss={loss_big:.3e})")
+
+    # -----------------------------
+    # TRUE PROJECTION TO x-AXIS (zero weights from index 1 onward)
+    # -----------------------------
+    params_big_proj = project_rich_to_x_axis(params_big)
+
+    # training projections are just first coordinate
+    s_train = X_full[:, 0].astype(float).reshape(-1)
+
+    # plotting/distillation range
+    S = float(np.max(np.abs(s_train)) + 1.0)
+
+    # 1D projected function
+    def g_big(ss: np.ndarray) -> np.ndarray:
+        ss = np.asarray(ss, dtype=float).reshape(-1)
+        X_axis = np.zeros((ss.size, d), dtype=float)
+        X_axis[:, 0] = ss
+        return network_forward(params_big_proj, X_axis).reshape(-1)
+    # -----------------------------
+
+    print("\n--- Active neurons (|w| > 1e-6) ---")
+
+    for j in range(params_big_proj.w.shape[0]):
+        w1 = params_big_proj.w[j, 0]
+        if abs(w1) > 1e-6:
+            b  = params_big_proj.b[j]
+            v  = params_big_proj.v[j]
+            print(f"Neuron {j}:  v={v:+.4f}   w={w1:+.6f}   b={b:+.6f}")
+
+
+    # ---------------------------------
+    # Plot projected 1D function g_big
+    # ---------------------------------
+    t_plot = np.linspace(-S, S, 2000)
+    g_vals = g_big(t_plot)
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(t_plot, g_vals, label="Projected big network (x-axis)")
+    plt.axhline(0.0, linestyle="--")
+    plt.scatter(s_train, np.zeros_like(s_train), s=10, alpha=0.3, label="train x_1 values")
+    plt.xlabel("t = x_1")
+    plt.ylabel("g(t)")
+    plt.title("Big network projected to x-axis")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("big_vs_2relu.png", dpi=300)
+    plt.close()
+
+    # -----------------------------
+    # DISTILL SMALL 1D (2-ReLU) to g_big over s-grid, then embed to 2D
+    # -----------------------------
+    # s_fit = np.linspace(-S, S, distill_s_grid_num)
+    # params_small_1d, distill_info = distill_2relu_student_to_target(
+    #     target_fn=g_big,
+    #     s_fit=s_fit,
+    #     distill_iters=distill_iters,
+    #     distill_lr=distill_lr,
+    # )
+    # params_small_2d = embed_1d_student_to_2d(params_small_1d)
+
+    t_grid = np.linspace(-2, 2, 2001)
+
+    t0 = find_root_on_grid_1d_fn(g_big, x_min=-S, x_max=+S, num=8001)
+    print("t0 =", t0, "g(t0) =", float(g_big(np.array([t0]))[0]))
+
+    params_small_dict, info = distill_2relu_with_fixed_root(
+        g=g_big,
+        t0=t0,
+        t_grid=t_grid,
+        lr=1e-2,
+        iters=30000,
+        sign_weight=200.0,
+        l2_weight=1e-4,
+        w1_init=5.0,
+        w2_init=-5.0,
+        return_column_w=True,
+    )
+
+    print(info)
+    params_small = NetworkParams(
+        w=params_small_dict["w"],
+        b=params_small_dict["b"],
+        v=params_small_dict["v"],
+    )
+
+    
+    # -----------------------------
+    # SMALL training set: (1,1)->+1, (-1,-1)->-1
+    # -----------------------------
+    X_small = np.array([[1.0, 1.0], [-1.0, -1.0]], dtype=float)
+    y_small = np.array([+1.0, -1.0], dtype=float)
+
+    # direction of the small problem line: (1,1)/sqrt(2)
+    u2 = np.array([1.0, 1.0], dtype=float)
+    u2 = u2 / np.linalg.norm(u2)
+
+    # unpack 1D student params
+    w1 = float(params_small_dict["w"][0, 0])   # because shape (2,1)
+    w2 = float(params_small_dict["w"][1, 0])
+    b  = params_small_dict["b"].astype(float)  # shape (2,)
+    v  = params_small_dict["v"].astype(float)  # shape (2,)
+
+    # lift to 2D: each row is a neuron weight vector in R^2
+    W2d = np.vstack([w1 * u2, w2 * u2])        # shape (2,2)
+
+    params_small_2d = NetworkParams(w=W2d, b=b, v=v)
+
+    # -----------------------------
+    # PLOT OVERLAY at join time
+    # -----------------------------
+    s_plot = np.linspace(-S, S, 1200)
+    gb = g_big(s_plot)
+    gs = _forward_small2d_on_line(params_small_2d, s_plot)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(s_plot, gb, label="g_big(s)")
+    plt.plot(s_plot, gs, "--", label="g_small")
+    plt.axhline(0.0, linestyle="--")
+    plt.scatter([np.sqrt(2), -np.sqrt(2)], [0, 0], s=80, marker="x", label="small train s=±sqrt(2)")
+    plt.title(f"Overlay at join (t={t_join})")
+    plt.xlabel("s")
+    plt.ylabel("value")
+    plt.grid(True)
+    plt.legend()
+    overlay_path = f"{save_prefix}_overlay_join_seed{seed}.png"
+    plt.tight_layout()
+    plt.savefig(overlay_path, dpi=200)
+    plt.close()
+    print("Saved:", overlay_path)
+
+    # -----------------------------
+    # HELPERS (using your existing functions exactly)
+    # -----------------------------
+    def _geom_proj_margin_big(params_big_curr) -> float:
+        # 1) project current big to x-axis
+        params_big_proj_curr = project_rich_to_x_axis(params_big_curr)
+
+        # 2) define g_big on x-axis (same convention you already use)
+        def g_big(ss: np.ndarray) -> np.ndarray:
+            ss = np.asarray(ss, dtype=float).reshape(-1)
+            X_axis = np.zeros((ss.size, d), dtype=float)
+            X_axis[:, 0] = ss
+            return network_forward(params_big_proj_curr, X_axis).reshape(-1)
+
+        # 3) find root t0 of the projected function
+        try:
+            t0 = find_root_on_grid_1d_fn(g_big, x_min=-S, x_max=+S, num=root_grid_num)
+        except RuntimeError:
+            return np.nan
+
+        # 4) geometric margin to nearest projected train point (x1 values)
+        return float(np.minimum(np.abs(t0 - 1.0), np.abs(t0 + 1.0)))
+
+
+    def _geom_margin_small(params_small_2d_curr) -> float:
+        # root of g_small(s) on the same s-axis you plot on
+        try:
+            t0 = find_root_on_grid_1d_fn(
+                lambda ss: _forward_small2d_on_line(params_small_2d_curr, ss),
+                x_min=-S, x_max=+S, num=root_grid_num
+            )
+        except RuntimeError:
+            return np.nan
+
+        return float(min(abs(t0 - 1), abs(t0 + 1)))
+    # -----------------------------
+    # POST training in parallel + track margins
+    # -----------------------------
+    iters = [t_join]
+
+    m_big_proj   = [_geom_proj_margin_big(params_big)]
+    m_small_geom = [_geom_margin_small(params_small_2d)]
+
+    for t_post in range(1, post_iters + 1):
+        # BIG trains on full dataset only
+        params_big, _ = _gd_step_wb_only(params_big, X_full, y_full, lr_big)
+
+        # SMALL trains on its 2 points only
+        params_small_2d, _ = _gd_step_wb_only(params_small_2d, X_small, y_small, lr_small)
+
+        if (t_post % track_every) == 0 or t_post == 1:
+            t_global = t_join + t_post
+            iters.append(t_global)
+
+            m_big_proj.append(_geom_proj_margin_big(params_big))          # ✅ re-project every time
+            m_small_geom.append(_geom_margin_small(params_small_2d))      # ✅ just compute
+
+        if (t_post % 100_000) == 0:
+            print(f"params_small_2d: {params_small_2d}")
+            print(f"[post] t_post={t_post} (global={t_join+t_post})")
+
+
+    # -----------------------------
+    # PLOT MARGINS
+    # -----------------------------
+    plt.figure(figsize=(10, 6))
+    # plt.plot(iters, m_big_signed, label="BIG signed margin on full data: min y f(X)")
+    plt.plot(iters, m_big_proj,   label="BIG projection geom margin on x-axis")
+    plt.plot(iters, m_small_geom, label="SMALL geom margin on (1,1)/(-1,-1)")
+    plt.axvline(x=t_join, color="red", linestyle="--", linewidth=2, label="join (distill time)")
+    plt.xlabel("Global iterations")
+    plt.ylabel("margin")
+    plt.title("Margins: big(full), big(x-axis projection), small(2pts)")
+    plt.grid(True)
+    plt.ylim(bottom=0, top=1.1)
+    plt.legend()
+    margins_path = f"{save_prefix}_margins_seed{seed}.png"
+    plt.tight_layout()
+    plt.savefig(margins_path, dpi=200)
+    plt.close()
+    print("Saved:", margins_path)
+
+    return {
+        "t_join": int(t_join),
+        "paths": {"overlay": overlay_path, "margins": margins_path},
+        "params_big_final": params_big,
+        "params_small_final": params_small_2d,
+        "distill_info": info,  # (make sure you named it distill_info above)
+        "history": {
+            "iters": np.array(iters, dtype=int),
+            "m_big_proj": np.array(m_big_proj, dtype=float),
+            "m_small_geom": np.array(m_small_geom, dtype=float),
+        },
+        "data": {
+            "X_full": X_full,
+            "y_full": y_full,
+            "X_small": X_small,
+            "y_small": y_small,
+            "s_train": s_train,  # projected coords (=x1)
         },
     }
