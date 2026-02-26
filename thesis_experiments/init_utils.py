@@ -3,23 +3,6 @@ from typing import List, Optional
 
 from .core import NetworkParams
 
-
-def get_theta_vector(params: NetworkParams) -> np.ndarray:
-    """Theta = [w_1..w_k, b_1..b_k, v_1..v_k]."""
-    return np.concatenate([params.w, params.b, params.v])
-
-
-def print_initial_params(params: NetworkParams, title: str = "Initial Parameters") -> None:
-    print(f"\n{title}:")
-    print(f"  Number of neurons (k): {params.k}")
-    print(f"  w = {params.w}")
-    print(f"  b = {params.b}")
-    print(f"  v = {params.v}")
-    theta = get_theta_vector(params)
-    print(f"  Theta (parameter vector) = {theta}")
-    print(f"  ||Theta|| = {np.linalg.norm(theta):.6f}")
-
-
 def initialize_network(
     k: int,
     init_type: str = "random",

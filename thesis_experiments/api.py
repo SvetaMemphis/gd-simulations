@@ -12,32 +12,16 @@ from .core import (
     exponential_loss,
     compute_gradients,
     gradient_descent_step,
-    train_gd,
 )
-from .metrics import (
-    find_decision_boundaries,
-    compute_margin,
-    compute_margin_gap,
-)
+
 from .init_utils import (
-    get_theta_vector,
-    print_initial_params,
     initialize_network,
 )
 from .datasets import (
     create_dataset,
 )
 from .experiments import (
-    experiment_1_arbitrary_neurons,
-    experiment_2_boundary_count,
-    experiment_3_robust_case,
-    experiment_4_non_symmetric,
-    experiment_5_overparameterized,
-    experiment_5b_highdimensional_clustered,
-    experiment_5c_margin_convergence_rate,
     experiment_5f_hit_linear_condition_with_low_loss,
-    experiment_5d_mixture,
-    example_initialization_options,
 )
 
 __all__ = [
