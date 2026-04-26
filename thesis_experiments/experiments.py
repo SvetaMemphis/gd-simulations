@@ -11,6 +11,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
     num_runs: int = 10000,
     max_iterations: int = 10_000_000,
     learning_rate: float = 0.05,
+    optimizer_name: str = "gd",
     tol: float = 1e-3,
     loss_threshold: float = 0.5,
     seed: int = 42,
@@ -86,6 +87,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 
             t = 0
             stop_reason = None
+            optimizer_state = {} if optimizer_name.upper() == "ADAM" else None
 
             while t <= max_iterations:
 
@@ -121,7 +123,12 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                     break
 
                 params, _ = gradient_descent_step(
-                    params, x, y, learning_rate=learning_rate
+                    params,
+                    x,
+                    y,
+                    learning_rate=learning_rate,
+                    optimizer_name=optimizer_name,
+                    optimizer_state=optimizer_state,
                 )
                 params.v = np.array([1.0, -1.0], dtype=float)
 
@@ -224,6 +231,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
         f.write(f"num_runs={num_runs}\n")
         f.write(f"max_iterations={max_iterations}\n")
         f.write(f"learning_rate={learning_rate}\n")
+        f.write(f"optimizer={optimizer_name.upper()}\n")
         f.write(f"tol={tol}, loss_threshold={loss_threshold}\n\n")
 
         f.write(f"Hit condition: {count_hit}/{num_runs}\n")

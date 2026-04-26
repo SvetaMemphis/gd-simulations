@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 
 @dataclass
@@ -86,14 +86,58 @@ def gradient_descent_step(
     x: np.ndarray,
     y: np.ndarray,
     learning_rate: float,
+    optimizer_name: str = "GD",
+    optimizer_state: Optional[Dict[str, np.ndarray]] = None,
     loss_fn: Callable = exponential_loss,
 ) -> Tuple[NetworkParams, float]:
     grads = compute_gradients(params, x, y, loss_fn)
-    new_params = NetworkParams(
-        w=params.w - learning_rate * grads.w,
-        b=params.b - learning_rate * grads.b,
-        v=params.v if params.k == 2 else params.v - learning_rate * grads.v,
-    )
+
+    opt_name = optimizer_name.upper()
+    if opt_name == "GD":
+        new_params = NetworkParams(
+            w=params.w - learning_rate * grads.w,
+            b=params.b - learning_rate * grads.b,
+            v=params.v if params.k == 2 else params.v - learning_rate * grads.v,
+        )
+    elif opt_name == "ADAM":
+        # NumPy implementation of ADAM update.
+        if optimizer_state is None:
+            optimizer_state = {}
+        beta1 = float(optimizer_state.get("beta1", 0.9))
+        beta2 = float(optimizer_state.get("beta2", 0.999))
+        eps = float(optimizer_state.get("eps", 1e-8))
+        t = int(optimizer_state.get("t", 0)) + 1
+        optimizer_state["t"] = t
+
+        if "m_w" not in optimizer_state:
+            optimizer_state["m_w"] = np.zeros_like(params.w)
+            optimizer_state["v_w"] = np.zeros_like(params.w)
+            optimizer_state["m_b"] = np.zeros_like(params.b)
+            optimizer_state["v_b"] = np.zeros_like(params.b)
+            optimizer_state["m_v"] = np.zeros_like(params.v)
+            optimizer_state["v_v"] = np.zeros_like(params.v)
+
+        optimizer_state["m_w"] = beta1 * optimizer_state["m_w"] + (1.0 - beta1) * grads.w
+        optimizer_state["v_w"] = beta2 * optimizer_state["v_w"] + (1.0 - beta2) * (grads.w * grads.w)
+        optimizer_state["m_b"] = beta1 * optimizer_state["m_b"] + (1.0 - beta1) * grads.b
+        optimizer_state["v_b"] = beta2 * optimizer_state["v_b"] + (1.0 - beta2) * (grads.b * grads.b)
+        optimizer_state["m_v"] = beta1 * optimizer_state["m_v"] + (1.0 - beta1) * grads.v
+        optimizer_state["v_v"] = beta2 * optimizer_state["v_v"] + (1.0 - beta2) * (grads.v * grads.v)
+
+        m_w_hat = optimizer_state["m_w"] / (1.0 - beta1**t)
+        v_w_hat = optimizer_state["v_w"] / (1.0 - beta2**t)
+        m_b_hat = optimizer_state["m_b"] / (1.0 - beta1**t)
+        v_b_hat = optimizer_state["v_b"] / (1.0 - beta2**t)
+        m_v_hat = optimizer_state["m_v"] / (1.0 - beta1**t)
+        v_v_hat = optimizer_state["v_v"] / (1.0 - beta2**t)
+
+        new_w = params.w - learning_rate * m_w_hat / (np.sqrt(v_w_hat) + eps)
+        new_b = params.b - learning_rate * m_b_hat / (np.sqrt(v_b_hat) + eps)
+        new_v = params.v if params.k == 2 else params.v - learning_rate * m_v_hat / (np.sqrt(v_v_hat) + eps)
+        new_params = NetworkParams(w=new_w, b=new_b, v=new_v)
+    else:
+        raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'GD' or 'ADAM'.")
+
     loss = loss_fn(np.asarray(y), network_forward(new_params, np.asarray(x)))
     return new_params, loss
 
