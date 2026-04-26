@@ -24,6 +24,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
   
     args = parser.parse_args(argv)
+    print(args)
 
     # Delayed import so `--help`/`--list-experiments` are fast.
     from .experiments import experiment_5f_hit_linear_condition_with_low_loss
