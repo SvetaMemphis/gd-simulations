@@ -17,7 +17,7 @@ def create_dataset(
         x = np.array([-1.0, 1.0]) * scale + shift
         y = np.array([-1.0, 1.0])
     else:
-        x = np.array([-0.5, 1.5]) * scale + shift
+        x = np.array([-1.2, 1]) * scale + shift
         y = np.array([-1.0, 1.0])
     return x, y
 

@@ -137,8 +137,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                             stop_reason = "hit condition"
                             count_hit += 1
 
-                            metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
-                            metric_values.append(metric_min)
+                            metric_values.append(abs(b2 - b1))
                             break
                 else:
                     raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'gd' or 'adam'.")
