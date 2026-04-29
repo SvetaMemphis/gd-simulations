@@ -73,9 +73,9 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 
             # Initialization
             w1_0 = float(rng.normal(0.0, np.sqrt(2)))
-            b1_0 =  float(rng.normal(0.0, np.sqrt(2)))
+            b1_0 =  1
             w2_0 = float(rng.normal(0.0, np.sqrt(2)))
-            b2_0 =  float(rng.normal(0.0, np.sqrt(2)))
+            b2_0 =  -1
 
             params = initialize_network(
                 k=2,
@@ -132,7 +132,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 
                     if len(diff_history) == diff_history.maxlen:
                         std_diff = float(np.std(np.asarray(diff_history)))
-                        if std_diff < 0.000001:
+                        if std_diff < 1e-7:
                             hit_times[r] = t
                             stop_reason = "hit condition"
                             count_hit += 1
