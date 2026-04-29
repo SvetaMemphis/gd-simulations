@@ -87,12 +87,13 @@ def gradient_descent_step(
     y: np.ndarray,
     learning_rate: float,
     optimizer_name: str = "GD",
-    optimizer_state: Optional[Dict[str, np.ndarray]] = None,
+    optimizer_state: Optional[Dict[str, object]] = None,
     loss_fn: Callable = exponential_loss,
-) -> Tuple[NetworkParams, float]:
+) -> Tuple[NetworkParams, float, Optional[Dict[str, np.ndarray]]]:
     grads = compute_gradients(params, x, y, loss_fn)
 
     opt_name = optimizer_name.upper()
+    adam_info: Optional[Dict[str, np.ndarray]] = None
     if opt_name == "GD":
         new_params = NetworkParams(
             w=params.w - learning_rate * grads.w,
@@ -135,9 +136,13 @@ def gradient_descent_step(
         new_b = params.b - learning_rate * m_b_hat / (np.sqrt(v_b_hat) + eps)
         new_v = params.v if params.k == 2 else params.v - learning_rate * m_v_hat / (np.sqrt(v_v_hat) + eps)
         new_params = NetworkParams(w=new_w, b=new_b, v=new_v)
+        adam_info = {
+            "v_w_hat": v_w_hat,
+            "v_b_hat": v_b_hat,
+        }
     else:
         raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'GD' or 'ADAM'.")
 
     loss = loss_fn(np.asarray(y), network_forward(new_params, np.asarray(x)))
-    return new_params, loss
+    return new_params, loss, adam_info
 

@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import csv
+from collections import deque
 
 from .core import network_forward, exponential_loss, gradient_descent_step
 from .datasets import create_dataset
@@ -15,14 +16,16 @@ def experiment_5f_hit_linear_condition_with_low_loss(
     tol: float = 1e-3,
     loss_threshold: float = 0.5,
     seed: int = 42,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
 ):
     """
     Runs num_runs times with random init:
         w ~ N(0,2), b=0, k=2, v=[1,-1] fixed.
 
     Stop when:
-        |w1 + b1 + w2 - b2| < tol
-        AND loss < loss_threshold
+        GD: |w1 + b1 + w2 - b2| < tol AND loss < loss_threshold
+        Adam: std_{t-999..t}(b2 - b1) < 0.1
 
     Abort rule:
         If at t=10000 loss still not < loss_threshold → abort.
@@ -59,7 +62,8 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                 "w1_0", "b1_0", "w2_0", "b2_0",
                 "w1_T", "b1_T", "w2_T", "b2_T",
                 "loss_last", "expr_last",
-                "metric_min"
+                "metric_min",
+                "adam_min_norm_vhat",
             ],
         )
         writer.writeheader()
@@ -69,9 +73,9 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 
             # Initialization
             w1_0 = float(rng.normal(0.0, np.sqrt(2)))
-            b1_0 = 0.0
+            b1_0 =  float(rng.normal(0.0, np.sqrt(2)))
             w2_0 = float(rng.normal(0.0, np.sqrt(2)))
-            b2_0 = 0.0
+            b2_0 =  float(rng.normal(0.0, np.sqrt(2)))
 
             params = initialize_network(
                 k=2,
@@ -87,7 +91,11 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 
             t = 0
             stop_reason = None
-            optimizer_state = {} if optimizer_name.upper() == "ADAM" else None
+            opt_name = optimizer_name.upper()
+            optimizer_state = {"beta1": beta1, "beta2": beta2} if opt_name == "ADAM" else None
+
+            diff_history = deque(maxlen=1000) if opt_name == "ADAM" else None
+            min_vhat_norm = float("inf")
 
             while t <= max_iterations:
 
@@ -108,21 +116,39 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                     break
 
                 # Hit condition
-                if loss_t < loss_threshold and expr_t < tol:
-                    hit_times[r] = t
-                    stop_reason = "hit condition"
-                    count_hit += 1
+                if opt_name == "GD":
+                    if loss_t < loss_threshold and expr_t < tol:
+                        hit_times[r] = t
+                        stop_reason = "hit condition"
+                        count_hit += 1
 
-                    metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
-                    metric_values.append(metric_min)
-                    break
+                        metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
+                        metric_values.append(metric_min)
+                        break
+                elif opt_name == "ADAM":
+                    # Track (b2 - b1) over the last 1000 iterations and check convergence.
+                    assert diff_history is not None
+                    diff_history.append(abs(b2 - b1))
+
+                    if len(diff_history) == diff_history.maxlen:
+                        std_diff = float(np.std(np.asarray(diff_history)))
+                        if std_diff < 0.000001:
+                            hit_times[r] = t
+                            stop_reason = "hit condition"
+                            count_hit += 1
+
+                            metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
+                            metric_values.append(metric_min)
+                            break
+                else:
+                    raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'gd' or 'adam'.")
 
                 if t == max_iterations:
                     stop_reason = "max-iterations"
                     count_max_iterations += 1
                     break
 
-                params, _ = gradient_descent_step(
+                params, _, adam_info = gradient_descent_step(
                     params,
                     x,
                     y,
@@ -131,6 +157,13 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                     optimizer_state=optimizer_state,
                 )
                 params.v = np.array([1.0, -1.0], dtype=float)
+
+                # For Adam runs, track the minimal ||[v_w_hat, v_b_hat]|| along the run.
+                if opt_name == "ADAM" and adam_info is not None:
+                    v_w_hat = adam_info["v_w_hat"]
+                    v_b_hat = adam_info["v_b_hat"]
+                    cur_norm = float(np.linalg.norm(np.concatenate([v_w_hat, v_b_hat])))
+                    min_vhat_norm = min(min_vhat_norm, cur_norm)
 
                 t += 1
 
@@ -143,6 +176,10 @@ def experiment_5f_hit_linear_condition_with_low_loss(
             metric_val = ""
             if stop_reason == "hit condition":
                 metric_val = metric_values[-1]
+
+            adam_min_norm_val = ""
+            if opt_name == "ADAM" and min_vhat_norm != float("inf"):
+                adam_min_norm_val = float(min_vhat_norm)
 
             writer.writerow({
                 "run": r,
@@ -160,6 +197,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                 "loss_last": loss_t,
                 "expr_last": expr_t,
                 "metric_min": metric_val,
+                "adam_min_norm_vhat": adam_min_norm_val,
             })
 
     # Safety check

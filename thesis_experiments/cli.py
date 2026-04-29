@@ -22,6 +22,18 @@ def main(argv: Optional[List[str]] = None) -> None:
         default="gd",
         help="Optimizer to use: gd or adam",
     )
+    parser.add_argument(
+        "--beta1",
+        type=float,
+        default=0.9,
+        help="Adam beta1 (momentum decay)",
+    )
+    parser.add_argument(
+        "--beta2",
+        type=float,
+        default=0.999,
+        help="Adam beta2 (RMS decay)",
+    )
   
     args = parser.parse_args(argv)
     print(args)
@@ -40,6 +52,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         learning_rate=args.lr if args.lr is not None else 0.01,
         optimizer_name=args.optimizer,
         seed=args.seed if args.seed else 42,
+        beta1=args.beta1,
+        beta2=args.beta2,
     )
 
 
