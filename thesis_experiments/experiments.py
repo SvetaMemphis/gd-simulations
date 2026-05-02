@@ -3,10 +3,33 @@ import matplotlib.pyplot as plt
 
 import csv
 from collections import deque
+from collections import defaultdict
+from pathlib import Path
 
 from .core import network_forward, exponential_loss, gradient_descent_step
 from .datasets import create_dataset
 from .init_utils import initialize_network
+
+
+def _format_lr_tag(learning_rate: float) -> str:
+    """Return a filesystem-safe tag for learning rates."""
+    return f"{learning_rate:.6g}".replace("-", "m").replace(".", "p")
+
+
+def _load_avg_curve(avg_csv_path: str):
+    path = Path(avg_csv_path)
+    if not path.exists():
+        return None
+
+    t_vals = []
+    mean_vals = []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            t_vals.append(int(row["t"]))
+            mean_vals.append(float(row["mean_w_diff"]))
+    return np.asarray(t_vals, dtype=int), np.asarray(mean_vals, dtype=float)
+
 
 def experiment_5f_hit_linear_condition_with_low_loss(
     num_runs: int = 10000,
@@ -18,6 +41,8 @@ def experiment_5f_hit_linear_condition_with_low_loss(
     seed: int = 42,
     beta1: float = 0.9,
     beta2: float = 0.999,
+    sample_every: int = 1000,
+    track_weight_diff: bool = True,
 ):
     """
     Runs num_runs times with random init:
@@ -42,17 +67,31 @@ def experiment_5f_hit_linear_condition_with_low_loss(
     rng = np.random.default_rng(seed)
     x, y = create_dataset(symmetric=True)
 
+    if sample_every <= 0:
+        raise ValueError("sample_every must be a positive integer.")
+
     hit_times = np.full(num_runs, -1, dtype=int)
     metric_values = []
+    trajectory_records = []
+    adam_bias_abs_values = []
 
     count_hit = 0
     count_loss_abort = 0
     count_max_iterations = 0
 
+    opt_name = optimizer_name.upper()
+    lr_tag = _format_lr_tag(learning_rate)
+
     runs_csv_path = "experiment_5f_runs.csv"
     summary_txt_path = "experiment_5f_summary.txt"
     hist1_csv_path = "experiment_5f_hit_time_hist.csv"
     hist2_csv_path = "experiment_5f_metric_hist.csv"
+    trajectory_csv_path = f"experiment_5f_wdiff_trajectory_{opt_name.lower()}_lr{lr_tag}.csv"
+    wdiff_avg_csv_path = f"experiment_5f_wdiff_avg_{opt_name.lower()}_lr{lr_tag}.csv"
+    wdiff_avg_png_path = f"experiment_5f_wdiff_avg_{opt_name.lower()}_lr{lr_tag}.png"
+    compare_png_path = f"experiment_5f_wdiff_avg_compare_lr{lr_tag}.png"
+    adam_bias_hist_csv_path = f"experiment_5f_bias_abs_hist_adam_lr{lr_tag}.csv"
+    adam_bias_hist_png_path = f"experiment_5f_bias_abs_hist_adam_lr{lr_tag}.png"
 
     with open(runs_csv_path, "w", newline="") as f_csv:
         writer = csv.DictWriter(
@@ -64,6 +103,7 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                 "loss_last", "expr_last",
                 "metric_min",
                 "adam_min_norm_vhat",
+                "final_bias_abs",
             ],
         )
         writer.writeheader()
@@ -73,9 +113,9 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 
             # Initialization
             w1_0 = float(rng.normal(0.0, np.sqrt(2)))
-            b1_0 =  1
+            b1_0 = 0.0
             w2_0 = float(rng.normal(0.0, np.sqrt(2)))
-            b2_0 =  -1
+            b2_0 = 0.0
 
             params = initialize_network(
                 k=2,
@@ -91,11 +131,12 @@ def experiment_5f_hit_linear_condition_with_low_loss(
 
             t = 0
             stop_reason = None
-            opt_name = optimizer_name.upper()
             optimizer_state = {"beta1": beta1, "beta2": beta2} if opt_name == "ADAM" else None
 
             diff_history = deque(maxlen=1000) if opt_name == "ADAM" else None
             min_vhat_norm = float("inf")
+            run_samples = []
+            sampled_iterations = set()
 
             while t <= max_iterations:
 
@@ -108,42 +149,48 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                 b2 = float(params.b[1])
 
                 expr_t = abs(w1 + b1 + w2 - b2)
+                w_diff_t = w1 - w2
+                bias_diff_abs_t = abs(b2 - b1)
+
+                if track_weight_diff and (t % sample_every == 0):
+                    run_samples.append((t, w1, w2, b1, b2, loss_t))
+                    sampled_iterations.add(t)
 
                 # Abort rule
-                if t == 10000 and not (loss_t < loss_threshold):
+                if t == 10_000 and not (loss_t < loss_threshold):
                     stop_reason = "loss-abort"
                     count_loss_abort += 1
                     break
 
                 # Hit condition
-                if opt_name == "GD":
-                    if loss_t < loss_threshold and expr_t < tol:
-                        hit_times[r] = t
-                        stop_reason = "hit condition"
-                        count_hit += 1
+                # if opt_name == "GD":
+                #     if loss_t < loss_threshold and expr_t < tol:
+                #         hit_times[r] = t
+                #         stop_reason = "hit condition"
+                #         count_hit += 1
 
-                        metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
-                        metric_values.append(metric_min)
-                        break
-                elif opt_name == "ADAM":
-                    # Track (b2 - b1) over the last 1000 iterations and check convergence.
-                    assert diff_history is not None
-                    diff_history.append(abs(b2 - b1))
+                #         metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
+                #         metric_values.append(metric_min)
+                #         break
+                # elif opt_name == "ADAM":
+                #     # Track (b2 - b1) over the last 1000 iterations and check convergence.
+                #     assert diff_history is not None
+                #     diff_history.append(abs(b2 - b1))
 
-                    if len(diff_history) == diff_history.maxlen:
-                        std_diff = float(np.std(np.asarray(diff_history)))
-                        if std_diff < 1e-7:
-                            hit_times[r] = t
-                            stop_reason = "hit condition"
-                            count_hit += 1
+                #     if len(diff_history) == diff_history.maxlen:
+                #         std_diff = float(np.std(np.asarray(diff_history)))
+                #         if std_diff < 1e-7:
+                #             hit_times[r] = t
+                #             stop_reason = "hit condition"
+                #             count_hit += 1
 
-                            metric_values.append(abs(b2 - b1))
-                            break
-                else:
-                    raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'gd' or 'adam'.")
+                #             metric_values.append(abs(b2 - b1))
+                #             break
+                # else:
+                #     raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'gd' or 'adam'.")
 
                 if t == max_iterations:
-                    stop_reason = "max-iterations"
+                    stop_reason = "hit condition"
                     count_max_iterations += 1
                     break
 
@@ -171,10 +218,17 @@ def experiment_5f_hit_linear_condition_with_low_loss(
             b1_T = float(params.b[0])
             w2_T = float(params.w[1])
             b2_T = float(params.b[1])
+            final_bias_abs = abs(b2_T - b1_T)
+            if opt_name == "ADAM":
+                adam_bias_abs_values.append(final_bias_abs)
+
+            if track_weight_diff and (t not in sampled_iterations):
+                run_samples.append((t, w1_T - w2_T, final_bias_abs, loss_t))
 
             metric_val = ""
             if stop_reason == "hit condition":
-                metric_val = metric_values[-1]
+                # metric_val = metric_values[-1]
+                metric_val = "NOT IMPORTANT"
 
             adam_min_norm_val = ""
             if opt_name == "ADAM" and min_vhat_norm != float("inf"):
@@ -197,7 +251,22 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                 "expr_last": expr_t,
                 "metric_min": metric_val,
                 "adam_min_norm_vhat": adam_min_norm_val,
+                "final_bias_abs": final_bias_abs,
             })
+            if track_weight_diff:
+                for t_sample, w_1_sample, w_2_sample, b_1_sample, b_2_sample, loss_sample in run_samples:
+                    trajectory_records.append({
+                        "run": r,
+                        "optimizer": opt_name,
+                        "learning_rate": learning_rate,
+                        "t": t_sample,
+                        "w_1": w_1_sample,
+                        "w_2": w_2_sample,
+                        "b_1": b_1_sample,
+                        "b_2": b_2_sample,
+                        "loss": loss_sample,
+                        "stop_reason": stop_reason,
+                    })
 
     # Safety check
     assert count_hit + count_loss_abort + count_max_iterations == num_runs
@@ -260,6 +329,106 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                     hist2_counts[i]
                 ])
 
+    avg_counts = None
+    avg_t_values = None
+    avg_mean_wdiff = None
+    if track_weight_diff and len(trajectory_records) > 0:
+        with open(trajectory_csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "run",
+                    "optimizer",
+                    "learning_rate",
+                    "t",
+                    "w_1",
+                    "w_2",
+                    "b_1",
+                    "b_2",
+                    "loss",
+                    "stop_reason",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(trajectory_records)
+
+        grouped_wdiff = defaultdict(list)
+        for row in trajectory_records:
+            grouped_wdiff[int(row["t"])].append(float(row["w_diff"]))
+
+        avg_t_values = np.array(sorted(grouped_wdiff.keys()), dtype=int)
+        avg_mean_wdiff = np.array(
+            [float(np.mean(grouped_wdiff[t])) for t in avg_t_values],
+            dtype=float,
+        )
+        avg_std_wdiff = np.array(
+            [float(np.std(grouped_wdiff[t])) for t in avg_t_values],
+            dtype=float,
+        )
+        avg_counts = np.array([len(grouped_wdiff[t]) for t in avg_t_values], dtype=int)
+
+        with open(wdiff_avg_csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["t", "mean_w_diff", "std_w_diff", "count"])
+            for idx in range(len(avg_t_values)):
+                writer.writerow([
+                    int(avg_t_values[idx]),
+                    float(avg_mean_wdiff[idx]),
+                    float(avg_std_wdiff[idx]),
+                    int(avg_counts[idx]),
+                ])
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(avg_t_values, avg_mean_wdiff, label=f"{opt_name} mean(w1-w2)")
+        plt.xlabel("Iterations")
+        plt.ylabel("Mean(w1 - w2)")
+        plt.title(f"Averaged w1-w2 trajectory ({opt_name}, lr={learning_rate})")
+        plt.tight_layout()
+        plt.legend()
+        plt.savefig(wdiff_avg_png_path, dpi=200)
+        plt.close()
+
+        other_opt = "gd" if opt_name == "ADAM" else "adam"
+        other_avg_path = f"experiment_5f_wdiff_avg_{other_opt}_lr{lr_tag}.csv"
+        other_curve = _load_avg_curve(other_avg_path)
+        if other_curve is not None:
+            other_t, other_mean = other_curve
+            plt.figure(figsize=(8, 5))
+            plt.plot(avg_t_values, avg_mean_wdiff, label=f"{opt_name} mean(w1-w2)")
+            plt.plot(other_t, other_mean, label=f"{other_opt.upper()} mean(w1-w2)")
+            plt.xlabel("Iterations")
+            plt.ylabel("Mean(w1 - w2)")
+            plt.title(f"Adam vs GD averaged w1-w2 (lr={learning_rate})")
+            plt.tight_layout()
+            plt.legend()
+            plt.savefig(compare_png_path, dpi=200)
+            plt.close()
+
+    adam_bias_counts = None
+    adam_bias_edges = None
+    if opt_name == "ADAM" and len(adam_bias_abs_values) > 0:
+        adam_bias_arr = np.array(adam_bias_abs_values, dtype=float)
+        adam_bias_counts, adam_bias_edges = np.histogram(adam_bias_arr, bins=40)
+
+        plt.figure(figsize=(8, 5))
+        plt.hist(adam_bias_arr, bins=40)
+        plt.title(f"Histogram of |b2-b1| (ADAM, lr={learning_rate})")
+        plt.xlabel("|b2 - b1|")
+        plt.ylabel("Count")
+        plt.tight_layout()
+        plt.savefig(adam_bias_hist_png_path, dpi=200)
+        plt.close()
+
+        with open(adam_bias_hist_csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["bin_left", "bin_right", "count"])
+            for i in range(len(adam_bias_counts)):
+                writer.writerow([
+                    adam_bias_edges[i],
+                    adam_bias_edges[i + 1],
+                    adam_bias_counts[i],
+                ])
+
     # -------------------------
     # Summary file
     # -------------------------
@@ -270,6 +439,8 @@ def experiment_5f_hit_linear_condition_with_low_loss(
         f.write(f"learning_rate={learning_rate}\n")
         f.write(f"optimizer={optimizer_name.upper()}\n")
         f.write(f"tol={tol}, loss_threshold={loss_threshold}\n\n")
+        f.write(f"sample_every={sample_every}\n")
+        f.write(f"track_weight_diff={track_weight_diff}\n\n")
 
         f.write(f"Hit condition: {count_hit}/{num_runs}\n")
         f.write(f"Failed (loss-abort): {count_loss_abort}/{num_runs}\n")
@@ -287,6 +458,27 @@ def experiment_5f_hit_linear_condition_with_low_loss(
             f.write("Metric histogram counts:\n")
             f.write(",".join(map(str, hist2_counts)) + "\n")
 
+        if avg_t_values is not None and avg_mean_wdiff is not None and avg_counts is not None:
+            f.write("\nAveraged w1-w2 trajectory:\n")
+            f.write(f"samples={len(avg_t_values)}\n")
+            f.write(f"first_t={int(avg_t_values[0])}, first_mean={float(avg_mean_wdiff[0])}\n")
+            f.write(f"last_t={int(avg_t_values[-1])}, last_mean={float(avg_mean_wdiff[-1])}\n")
+            f.write(f"last_count={int(avg_counts[-1])}\n")
+            f.write(f"trajectory_csv={trajectory_csv_path}\n")
+            f.write(f"wdiff_avg_csv={wdiff_avg_csv_path}\n")
+            f.write(f"wdiff_avg_plot={wdiff_avg_png_path}\n")
+            if Path(compare_png_path).exists():
+                f.write(f"wdiff_compare_plot={compare_png_path}\n")
+
+        if adam_bias_counts is not None:
+            f.write("\nAdam |b2-b1| histogram:\n")
+            f.write("edges:\n")
+            f.write(",".join(map(str, adam_bias_edges)) + "\n")
+            f.write("counts:\n")
+            f.write(",".join(map(str, adam_bias_counts)) + "\n")
+            f.write(f"adam_bias_hist_csv={adam_bias_hist_csv_path}\n")
+            f.write(f"adam_bias_hist_plot={adam_bias_hist_png_path}\n")
+
     print("\n=== Experiment 5f summary ===")
     print(f"Hit condition: {count_hit}/{num_runs}")
     print(f"Failed (loss-abort): {count_loss_abort}/{num_runs}")
@@ -300,5 +492,14 @@ def experiment_5f_hit_linear_condition_with_low_loss(
     if hist2_counts is not None:
         print(" - experiment_5f_metric_hist.png")
         print(" - experiment_5f_metric_hist.csv")
+    if track_weight_diff and len(trajectory_records) > 0:
+        print(f" - {trajectory_csv_path}")
+        print(f" - {wdiff_avg_csv_path}")
+        print(f" - {wdiff_avg_png_path}")
+        if Path(compare_png_path).exists():
+            print(f" - {compare_png_path}")
+    if adam_bias_counts is not None:
+        print(f" - {adam_bias_hist_png_path}")
+        print(f" - {adam_bias_hist_csv_path}")
 
 # # 
