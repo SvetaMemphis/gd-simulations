@@ -40,7 +40,7 @@ Examples:
 
     args = parser.parse_args(argv)
 
-    tag = f"{args.optimizer.lower()}_k{args.k}_lr{args.lr}_n{args.n}_d{args.d}"
+    tag = f"{args.optimizer.lower()}_k{args.k}_lr{args.lr}_n{args.n}_d{args.d}_runs{args.num_runs}"
     if args.output_csv is None:
         args.output_csv = f"experiment_disks_summary_{tag}.csv"
     if args.dist_comparison_csv is None:
