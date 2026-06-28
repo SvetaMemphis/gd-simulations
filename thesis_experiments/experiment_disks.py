@@ -354,38 +354,54 @@ def experiment_disks(
 
     # ── Plot: distance vs step ───────────────────────────────────────────────
     if all_comparison_rows:
-        # For multi-run future support: group by step and compute mean.
         from collections import defaultdict
-        by_step: dict = defaultdict(lambda: {"large": [], "small": []})
-        for row in all_comparison_rows:
-            by_step[row["step"]]["large"].append(row["min_dist_large"])
-            by_step[row["step"]]["small"].append(row["min_dist_small"])
-
-        steps_sorted = sorted(by_step)
-        mean_large = np.array([float(np.nanmean(by_step[s]["large"])) for s in steps_sorted])
-        mean_small = np.array([float(np.nanmean(by_step[s]["small"])) for s in steps_sorted])
-        std_large  = np.array([float(np.nanstd(by_step[s]["large"]))  for s in steps_sorted])
-        std_small  = np.array([float(np.nanstd(by_step[s]["small"]))  for s in steps_sorted])
 
         num_completed = len({r["run"] for r in all_comparison_rows})
-
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(steps_sorted, mean_large, label=f"Large network ({d}D, k={k})", color="steelblue")
-        ax.plot(steps_sorted, mean_small, label="Small network (1D, k=2)", color="tomato")
-        if num_completed > 1:
+
+        if num_completed <= 5:
+            linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
+            by_run: dict = defaultdict(lambda: {"steps": [], "large": [], "small": []})
+            for row in all_comparison_rows:
+                by_run[row["run"]]["steps"].append(row["step"])
+                by_run[row["run"]]["large"].append(row["min_dist_large"])
+                by_run[row["run"]]["small"].append(row["min_dist_small"])
+
+            for i, run_id in enumerate(sorted(by_run)):
+                ls = linestyles[i % len(linestyles)]
+                run_label = f" (run {run_id})" if num_completed > 1 else ""
+                ax.plot(by_run[run_id]["steps"], by_run[run_id]["large"],
+                        color="steelblue", linestyle=ls,
+                        label=f"Large network ({d}D, k={k}){run_label}")
+                ax.plot(by_run[run_id]["steps"], by_run[run_id]["small"],
+                        color="tomato", linestyle=ls,
+                        label=f"Small network (1D, k=2){run_label}")
+        else:
+            by_step: dict = defaultdict(lambda: {"large": [], "small": []})
+            for row in all_comparison_rows:
+                by_step[row["step"]]["large"].append(row["min_dist_large"])
+                by_step[row["step"]]["small"].append(row["min_dist_small"])
+
+            steps_sorted = sorted(by_step)
+            mean_large = np.array([float(np.nanmean(by_step[s]["large"])) for s in steps_sorted])
+            mean_small = np.array([float(np.nanmean(by_step[s]["small"])) for s in steps_sorted])
+            std_large  = np.array([float(np.nanstd(by_step[s]["large"]))  for s in steps_sorted])
+            std_small  = np.array([float(np.nanstd(by_step[s]["small"]))  for s in steps_sorted])
+
+            ax.plot(steps_sorted, mean_large, label=f"Large network ({d}D, k={k})", color="steelblue")
+            ax.plot(steps_sorted, mean_small, label="Small network (1D, k=2)", color="tomato")
             ax.fill_between(steps_sorted, mean_large - std_large, mean_large + std_large,
                             color="steelblue", alpha=0.2)
             ax.fill_between(steps_sorted, mean_small - std_small, mean_small + std_small,
                             color="tomato", alpha=0.2)
-        plt.xlabel("Step (Phase 2)")
-        plt.ylabel("Min boundary distance")
+
+        ax.set_ylim(0.5, 1.0)
         ax.set_xlabel("Step (Phase 2)")
         ax.set_ylabel("Min boundary distance")
         ax.set_title(
             f"Min boundary distance vs steps  —  "
             f"{opt_name}, lr={learning_rate}, n={n}, d={d}, k={k}"
         )
-        ax.set_ylim(0.5, 1.0)
         ax.legend()
         fig.tight_layout()
         fig.savefig(dist_comparison_png, dpi=200)
