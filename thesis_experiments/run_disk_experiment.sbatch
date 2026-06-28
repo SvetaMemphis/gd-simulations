@@ -15,4 +15,8 @@ echo "SLURM_JOBID"=$SLURM_JOBID echo "SLURM_JOB_NODELIST"=$SLURM_JOB_NODELIST
 module load anaconda              ### load anaconda module
 source activate privacyrobustness            ### activate a conda environment, replace my_env with your conda environment
 CUDA_VISIBLE_DEVICES=0
+
+# Disable Python output buffering
+export PYTHONUNBUFFERED=TRUE
+
 python main_disks.py --optimizer adam --max-iterations 1000001 --k 10 --d 5 --n 20 --lr 0.1 --num-runs 200 --report-every 100000
