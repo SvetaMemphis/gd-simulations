@@ -137,7 +137,10 @@ def experiment_disks(
     loss_threshold = 1.0 / n
     opt_name = optimizer_name.upper()
     if not dist_comparison_png:
-        dist_comparison_png = f"experiment_disks_dist_comparison_{opt_name.lower()}_d{d}_k{k}.png"
+        dist_comparison_png = (
+            f"experiment_disks_dist_comparison_{opt_name.lower()}_k{k}_"
+            f"lr{learning_rate}_n{n}_d{d}_runs{num_runs}.png"
+        )
 
     print(
         f"experiment_disks: n={n}, d={d}, k={k}, "
