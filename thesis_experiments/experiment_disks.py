@@ -393,9 +393,11 @@ def experiment_disks(
 
             ax.plot(steps_sorted, mean_large, label=f"Large network ({d}D, k={k})", color="steelblue")
             ax.plot(steps_sorted, mean_small, label="Small network (1D, k=2)", color="tomato")
-            ax.fill_between(steps_sorted, mean_large - std_large, mean_large + std_large,
+            half_std_large = 0.5 * std_large
+            half_std_small = 0.5 * std_small
+            ax.fill_between(steps_sorted, mean_large - half_std_large, mean_large + half_std_large,
                             color="steelblue", alpha=0.2)
-            ax.fill_between(steps_sorted, mean_small - std_small, mean_small + std_small,
+            ax.fill_between(steps_sorted, mean_small - half_std_small, mean_small + half_std_small,
                             color="tomato", alpha=0.2)
 
         ax.set_ylim(0.5, 1.0)
