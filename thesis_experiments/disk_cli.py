@@ -37,6 +37,9 @@ Examples:
     parser.add_argument("--dist-comparison-csv", default=None)
     parser.add_argument("--dist-comparison-png", default="")
     parser.add_argument("--weight-diff-csv",     default=None)
+    parser.add_argument("--unified-comparison-csv", default=None,
+                        help="(run, step, min_dist_large, min_dist_small) on a single "
+                             "absolute step axis spanning Phase 1 and Phase 2")
 
     args = parser.parse_args(argv)
 
@@ -47,6 +50,8 @@ Examples:
         args.dist_comparison_csv = f"experiment_disks_dist_comparison_{tag}.csv"
     if args.weight_diff_csv is None:
         args.weight_diff_csv = f"experiment_disks_weight_diff_{tag}.csv"
+    if args.unified_comparison_csv is None:
+        args.unified_comparison_csv = f"experiment_disks_unified_comparison_{tag}.csv"
 
     print("=" * 60)
     print("Disk Experiment — 2-layer ReLU network on 2-disk dataset")
@@ -72,6 +77,7 @@ Examples:
         dist_comparison_csv=args.dist_comparison_csv,
         dist_comparison_png=args.dist_comparison_png,
         weight_diff_csv=args.weight_diff_csv,
+        unified_comparison_csv=args.unified_comparison_csv,
     )
 
     print("\n" + "=" * 60)

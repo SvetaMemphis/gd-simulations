@@ -57,9 +57,14 @@ def train_phase1(
     beta1: float = 0.9,
     beta2: float = 0.999,
     eps: float = 1e-8,
+    report_every: Optional[int] = None,
 ) -> tuple:
     """
     Phase 1: train until loss ≤ loss_threshold, aborting if loss > threshold at t=10 000.
+
+    If `report_every` is given, the network's overall min boundary distance is checkpointed
+    at t=0 and every `report_every` steps, mirroring Phase 2's checkpointing so the two phases
+    can be plotted on a single, absolute step axis.
 
     Returns
     -------
@@ -67,6 +72,7 @@ def train_phase1(
     t_threshold   : iteration when threshold was first reached (−1 if aborted/not reached)
     adam_state    : Adam momentum state dict to pass to train_phase2 (None for GD)
     stop_reason   : "threshold-reached", "loss-abort", or "max-iterations"
+    checkpoints   : list of {"step": t, "loss": ..., "min_dist_large": ...} dicts
     """
     opt_name = optimizer_name.upper()
     if opt_name not in ("GD", "ADAM"):
@@ -81,17 +87,25 @@ def train_phase1(
             "m_v": np.zeros_like(v), "sv_v": np.zeros_like(v),
         }
 
+    checkpoints: list = []
+
     for t in range(max_iterations + 1):
         preds = forward(W, b, v, X)
         loss_val = exp_loss(y, preds)
 
+        if report_every and (t == 0 or t % report_every == 0):
+            dists = compute_boundary_distances(W, b, v, X)
+            fin = dists[np.isfinite(dists)]
+            min_dist_large = float(np.min(fin)) if len(fin) > 0 else float("nan")
+            checkpoints.append({"step": t, "loss": loss_val, "min_dist_large": min_dist_large})
+
         if t == 10_000 and loss_val > loss_threshold:
             print(f"[t={t}] Loss {loss_val:.6g} > threshold {loss_threshold:.6g} — aborting.")
-            return W, b, v, -1, None, "loss-abort"
+            return W, b, v, -1, None, "loss-abort", checkpoints
 
         if loss_val <= loss_threshold and t > 1_000_000:
             print(f"[t={t}] Loss threshold reached: {loss_val:.6g}")
-            return W, b, v, t, adam_state, "threshold-reached"
+            return W, b, v, t, adam_state, "threshold-reached", checkpoints
             # dists = compute_boundary_distances(W, b, v, X)
             # dp = dists[y == 1]; dn = dists[y == -1]
             # fin_p = dp[np.isfinite(dp)]; fin_n = dn[np.isfinite(dn)]
@@ -119,4 +133,4 @@ def train_phase1(
         if t % 100_000 == 0 and t > 0:
             print(f"  [t={t}] loss={loss_val:.6g}")
 
-    return W, b, v, -1, adam_state, "max-iterations"
+    return W, b, v, -1, adam_state, "max-iterations", checkpoints

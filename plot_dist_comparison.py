@@ -76,11 +76,14 @@ def plot_dist_comparison(
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            # min_dist_small is blank for Phase-1-only rows in a unified-comparison CSV,
+            # since the small network doesn't exist yet; treat it as a gap (NaN).
+            small_str = row["min_dist_small"].strip()
             rows.append({
                 "run":            int(row["run"]),
                 "step":           int(row["step"]),
                 "min_dist_large": float(row["min_dist_large"]),
-                "min_dist_small": float(row["min_dist_small"]),
+                "min_dist_small": float(small_str) if small_str else float("nan"),
             })
 
     if not rows:

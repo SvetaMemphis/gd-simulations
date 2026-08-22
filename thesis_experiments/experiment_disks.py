@@ -125,14 +125,22 @@ def experiment_disks(
     dist_comparison_csv: str = "experiment_disks_dist_comparison.csv",
     dist_comparison_png: str = "",
     weight_diff_csv: str = "experiment_disks_weight_diff.csv",
+    unified_comparison_csv: str = "experiment_disks_unified_comparison.csv",
 ):
     """
     Run the 2-disk experiment and produce a boundary-distance comparison plot.
 
-    output_csv           — checkpoint rows: run, step, t, loss, min_dist_large,
-                           min_dist_pos, min_dist_neg, min_dist_small
-    dist_comparison_csv  — (run, step, min_dist_large, min_dist_small)
-    dist_comparison_png  — distance-vs-step line plot for both networks
+    output_csv               — checkpoint rows: run, step, t, loss, min_dist_large,
+                               min_dist_pos, min_dist_neg, min_dist_small
+    dist_comparison_csv      — Phase-2-relative (run, step, min_dist_large, min_dist_small);
+                               step resets to 0 at the start of Phase 2.
+    dist_comparison_png      — distance-vs-step line plot for both networks
+    unified_comparison_csv   — (run, step, min_dist_large, min_dist_small) on a single
+                               absolute step axis spanning Phase 1 and Phase 2. min_dist_small
+                               is blank for Phase-1 rows, since the small network does not
+                               exist yet; it starts appearing once Phase 2 begins (step ≈
+                               t_threshold, the iteration at which Phase 1's loss threshold
+                               was reached).
     """
     loss_threshold = 1.0 / n
     opt_name = optimizer_name.upper()
@@ -153,6 +161,7 @@ def experiment_disks(
     all_summary_rows: list[dict] = []
     all_comparison_rows: list[dict] = []
     all_weight_diff_rows: list[dict] = []
+    all_unified_rows: list[dict] = []
 
     for run_idx in range(num_runs):
         run_seed = seed + run_idx
@@ -166,7 +175,7 @@ def experiment_disks(
         v = np.concatenate([np.ones(k // 2), -np.ones(k - k // 2)])
 
         # ── Phase 1: large network → loss threshold ─────────────────────────
-        W, b, v, t_threshold, adam_state, phase1_reason = train_phase1(
+        W, b, v, t_threshold, adam_state, phase1_reason, phase1_checkpoints = train_phase1(
             W, b, v, X, y,
             optimizer_name=optimizer_name,
             learning_rate=learning_rate,
@@ -174,6 +183,7 @@ def experiment_disks(
             loss_threshold=loss_threshold,
             train_v=False,
             beta1=beta1, beta2=beta2, eps=eps,
+            report_every=report_every,
         )
 
         if phase1_reason == "loss-abort":
@@ -190,6 +200,16 @@ def experiment_disks(
         if not fin_pos.any() or not fin_neg.any():
             print(f"  Run {run_idx}: no finite boundary distances — skipping.")
             continue
+
+        # Phase-1 checkpoints, on the same absolute step axis as Phase 2 below.
+        # min_dist_small is left blank: the small network is not initialized until
+        # Phase 1 ends (see below), so it has no margin to report during Phase 1.
+        for cp in phase1_checkpoints:
+            all_unified_rows.append({
+                "run": run_idx, "step": cp["step"],
+                "min_dist_large": cp["min_dist_large"],
+                "min_dist_small": "",
+            })
 
         X_pos = X[y == 1]
         X_neg = X[y == -1]
@@ -284,6 +304,11 @@ def experiment_disks(
                     "min_dist_large": min_dist_large,
                     "min_dist_small": min_dist_small,
                 })
+                all_unified_rows.append({
+                    "run": run_idx, "step": t_large,
+                    "min_dist_large": min_dist_large,
+                    "min_dist_small": min_dist_small,
+                })
 
                 if prev_W is not None:
                     all_weight_diff_rows.append({
@@ -355,6 +380,11 @@ def experiment_disks(
         writer.writeheader()
         writer.writerows(all_weight_diff_rows)
 
+    with open(unified_comparison_csv, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["run", "step", "min_dist_large", "min_dist_small"])
+        writer.writeheader()
+        writer.writerows(all_unified_rows)
+
     # ── Plot: distance vs step ───────────────────────────────────────────────
     if all_comparison_rows:
         from collections import defaultdict
@@ -417,5 +447,6 @@ def experiment_disks(
     print(f"\nDone. {non_aborted}/{num_runs} non-aborted runs.")
     print(f"  {output_csv}")
     print(f"  {dist_comparison_csv}")
+    print(f"  {unified_comparison_csv}")
 
     return all_summary_rows
