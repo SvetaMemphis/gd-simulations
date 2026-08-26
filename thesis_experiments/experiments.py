@@ -9,7 +9,7 @@ from collections import deque
 from collections import defaultdict
 from pathlib import Path
 
-from .core import network_forward, exponential_loss, gradient_descent_step
+from .core import NetworkParams, network_forward, exponential_loss, gradient_descent_step
 from .datasets import create_dataset
 from .init_utils import initialize_network
 
@@ -183,31 +183,31 @@ def experiment_5f_hit_linear_condition_with_low_loss(
                     break
 
                 # Hit condition
-                # if opt_name == "GD":
-                #     if loss_t < loss_threshold and expr_t < tol:
-                #         hit_times[r] = t
-                #         stop_reason = "hit condition"
-                #         count_hit += 1
+                if opt_name == "GD":
+                    if loss_t < loss_threshold and expr_t < tol:
+                        hit_times[r] = t
+                        stop_reason = "hit condition"
+                        count_hit += 1
 
-                #         metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
-                #         metric_values.append(metric_min)
-                #         break
-                # elif opt_name == "ADAM":
-                #     # Track (b2 - b1) over the last 1000 iterations and check convergence.
-                #     assert diff_history is not None
-                #     diff_history.append(abs(b2 - b1))
+                        metric_min = min(abs(b2 - b1), abs(w1_0 + w2_0) / 2.0)
+                        metric_values.append(metric_min)
+                        break
+                elif opt_name == "ADAM":
+                    # Track (b2 - b1) over the last 1000 iterations and check convergence.
+                    assert diff_history is not None
+                    diff_history.append(abs(b2 - b1))
 
-                #     if len(diff_history) == diff_history.maxlen:
-                #         std_diff = float(np.std(np.asarray(diff_history)))
-                #         if std_diff < 1e-7:
-                #             hit_times[r] = t
-                #             stop_reason = "hit condition"
-                #             count_hit += 1
+                    if len(diff_history) == diff_history.maxlen:
+                        std_diff = float(np.std(np.asarray(diff_history)))
+                        if std_diff < 1e-7:
+                            hit_times[r] = t
+                            stop_reason = "hit condition"
+                            count_hit += 1
 
-                #             metric_values.append(abs(b2 - b1))
-                #             break
-                # else:
-                #     raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'gd' or 'adam'.")
+                            metric_values.append(abs(b2 - b1))
+                            break
+                else:
+                    raise ValueError(f"Unsupported optimizer_name={optimizer_name}. Use 'gd' or 'adam'.")
 
                 if t == max_iterations:
                     stop_reason = "hit condition"
@@ -706,3 +706,320 @@ def run_experiment_5f_parallel(
 
     print(f"\nMerged {global_run} runs → {merged_csv}")
     print(f"Convergence histograms written to {out}/")
+def experiment_1d_from_disk_ratio(
+    min_dist_pos: float,
+    min_dist_neg: float,
+    net_val_pos: float,
+    net_val_neg: float,
+    optimizer_name: str = "gd",
+    learning_rate: float = 0.01,
+    max_iterations: int = 1_000_000,
+    loss_threshold: float = 0.5,
+    tol: float = 1e-3,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    eps: float = 1e-8,
+    report_every: int = 10_000,
+    output_prefix: str = "experiment_1d_disk_ratio",
+) -> dict:
+    """
+    Run a single 1D 2-neuron experiment matching the disk experiment's boundary.
+
+    Constraints satisfied by the initialization:
+      - dist(+1, boundary) / dist(-1, boundary) == min_dist_pos / min_dist_neg
+      - f(+1) == net_val_pos  (disk network value at the closest positive point)
+      - f(-1) == net_val_neg  (disk network value at the closest negative point)
+
+    Derivation (v=[1,-1] fixed, single breakpoint at x*):
+      x*   = (1 - ratio) / (1 + ratio),    ratio = min_dist_pos / min_dist_neg
+      w1   = net_val_pos / (1 - x*)
+      b1   = -w1 * x*
+      w2   = net_val_neg / (1 + x*)
+      b2   = -w2 * x*
+
+    Saves the same file set as experiment_5f_hit_linear_condition_with_low_loss
+    (runs CSV, trajectory CSV, wdiff-avg CSV/PNG, summary TXT, Adam bias CSV/PNG).
+    """
+    print(
+        f"\nexperiment_1d_from_disk_ratio: "
+        f"min_dist_pos={min_dist_pos:.6g}, min_dist_neg={min_dist_neg:.6g}, "
+        f"net_val_pos={net_val_pos:.6g}, net_val_neg={net_val_neg:.6g}"
+    )
+
+    ratio = min_dist_pos / min_dist_neg
+    x_star = (1.0 - ratio) / (1.0 + ratio)
+
+    w1_0 = net_val_pos / (1.0 - x_star)
+    b1_0 = -w1_0 * x_star
+    w2_0 = net_val_neg / (1.0 + x_star)
+    b2_0 = -w2_0 * x_star
+
+    print(f"  ratio={ratio:.6g}  x*={x_star:.6g}  w=[{w1_0:.6g}, {w2_0:.6g}]  b=[{b1_0:.6g}, {b2_0:.6g}]")
+
+    opt_name = optimizer_name.upper()
+    lr_tag = _format_lr_tag(learning_rate)
+
+    runs_csv_path       = f"{output_prefix}_runs.csv"
+    summary_txt_path    = f"{output_prefix}_summary.txt"
+    trajectory_csv_path = f"{output_prefix}_wdiff_trajectory_{opt_name.lower()}_lr{lr_tag}.csv"
+    wdiff_avg_csv_path  = f"{output_prefix}_wdiff_avg_{opt_name.lower()}_lr{lr_tag}.csv"
+    wdiff_avg_png_path  = f"{output_prefix}_wdiff_avg_{opt_name.lower()}_lr{lr_tag}.png"
+    hit_time_csv_path   = f"{output_prefix}_hit_time_hist.csv"
+    hit_time_png_path   = f"{output_prefix}_hit_time_hist.png"
+    adam_bias_csv_path  = f"{output_prefix}_bias_abs_hist_adam_lr{lr_tag}.csv"
+    adam_bias_png_path  = f"{output_prefix}_bias_abs_hist_adam_lr{lr_tag}.png"
+
+    params = NetworkParams(
+        w=np.array([w1_0, w2_0]),
+        b=np.array([b1_0, b2_0]),
+        v=np.array([1.0, -1.0]),
+    )
+
+    x_data = np.array([1.0, -1.0])
+    y_data = np.array([1.0, -1.0])
+
+    optimizer_state = (
+        {"beta1": beta1, "beta2": beta2, "eps": eps} if opt_name == "ADAM" else None
+    )
+
+    t = 0
+    t_hit = -1
+    stop_reason = "max-iterations"
+    min_vhat_norm = float("inf")
+    trajectory_records = []
+    sampled_iterations = set()
+    loss_t = float("nan")
+    diff_history = deque(maxlen=1000) if opt_name == "ADAM" else None
+
+    while t <= max_iterations:
+        preds = network_forward(params, x_data)
+        loss_t = float(exponential_loss(y_data, preds))
+
+        w1 = float(params.w[0])
+        b1 = float(params.b[0])
+        w2 = float(params.w[1])
+        b2 = float(params.b[1])
+        expr_t = abs(w1 + b1 + w2 - b2)
+
+        if t % report_every == 0:
+            trajectory_records.append({
+                "run": 0,
+                "optimizer": opt_name,
+                "learning_rate": learning_rate,
+                "t": t,
+                "w_1": w1,
+                "w_2": w2,
+                "b_1": b1,
+                "b_2": b2,
+                "loss": loss_t,
+                "stop_reason": "",  # back-filled after loop
+            })
+            sampled_iterations.add(t)
+
+        if t == 10_000 and loss_t > loss_threshold:
+            stop_reason = "loss-abort"
+            print(f"  [t={t}] 1D loss {loss_t:.6g} > {loss_threshold:.6g} — aborting.")
+            break
+
+        if opt_name == "GD":
+            if loss_t < loss_threshold and expr_t < tol:
+                t_hit = t
+                stop_reason = "hit-condition"
+                print(f"  [t={t}] GD hit condition: loss={loss_t:.6g}, |w1+b1+w2-b2|={expr_t:.6g}")
+                if t not in sampled_iterations:
+                    trajectory_records.append({
+                        "run": 0,
+                        "optimizer": opt_name,
+                        "learning_rate": learning_rate,
+                        "t": t,
+                        "w_1": w1,
+                        "w_2": w2,
+                        "b_1": b1,
+                        "b_2": b2,
+                        "loss": loss_t,
+                        "stop_reason": "",
+                    })
+                break
+        elif opt_name == "ADAM":
+            assert diff_history is not None
+            diff_history.append(abs(b2 - b1))
+            if len(diff_history) == diff_history.maxlen:
+                std_diff = float(np.std(np.asarray(diff_history)))
+                if std_diff < 1e-7:
+                    t_hit = t
+                    stop_reason = "hit-condition"
+                    print(f"  [t={t}] Adam hit condition: std(b2-b1)={std_diff:.6g}")
+                    if t not in sampled_iterations:
+                        trajectory_records.append({
+                            "run": 0,
+                            "optimizer": opt_name,
+                            "learning_rate": learning_rate,
+                            "t": t,
+                            "w_1": w1,
+                            "w_2": w2,
+                            "b_1": b1,
+                            "b_2": b2,
+                            "loss": loss_t,
+                            "stop_reason": "",
+                        })
+                    break
+
+        if t == max_iterations:
+            break
+
+        params, _, adam_info = gradient_descent_step(
+            params, x_data, y_data, learning_rate,
+            optimizer_name=optimizer_name,
+            optimizer_state=optimizer_state,
+        )
+
+        if opt_name == "ADAM" and adam_info is not None:
+            v_w_hat = adam_info["v_w_hat"]
+            v_b_hat = adam_info["v_b_hat"]
+            cur_norm = float(np.linalg.norm(np.concatenate([v_w_hat, v_b_hat])))
+            min_vhat_norm = min(min_vhat_norm, cur_norm)
+
+        t += 1
+
+    # Back-fill stop_reason in all trajectory rows
+    for rec in trajectory_records:
+        rec["stop_reason"] = stop_reason
+
+    # Final parameters
+    w1_T = float(params.w[0])
+    b1_T = float(params.b[0])
+    w2_T = float(params.w[1])
+    b2_T = float(params.b[1])
+    final_bias_abs = abs(b2_T - b1_T)
+    expr_last = abs(w1_T + b1_T + w2_T - b2_T)
+
+    # ---- runs CSV ----
+    with open(runs_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "run", "stop_reason", "t_last", "t_hit",
+            "w1_0", "b1_0", "w2_0", "b2_0",
+            "w1_T", "b1_T", "w2_T", "b2_T",
+            "loss_last", "expr_last",
+            "metric_min", "adam_min_norm_vhat", "final_bias_abs",
+        ])
+        writer.writeheader()
+        writer.writerow({
+            "run": 0,
+            "stop_reason": stop_reason,
+            "t_last": t,
+            "t_hit": t_hit,
+            "w1_0": w1_0, "b1_0": b1_0, "w2_0": w2_0, "b2_0": b2_0,
+            "w1_T": w1_T, "b1_T": b1_T, "w2_T": w2_T, "b2_T": b2_T,
+            "loss_last": loss_t,
+            "expr_last": expr_last,
+            "metric_min": "",
+            "adam_min_norm_vhat": float(min_vhat_norm) if min_vhat_norm != float("inf") else "",
+            "final_bias_abs": final_bias_abs,
+        })
+
+    # ---- trajectory CSV ----
+    with open(trajectory_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "run", "optimizer", "learning_rate", "t",
+            "w_1", "w_2", "b_1", "b_2", "loss", "stop_reason",
+        ])
+        writer.writeheader()
+        writer.writerows(trajectory_records)
+
+    # ---- wdiff avg CSV + PNG ----
+    wdiff_by_t = {rec["t"]: rec["w_1"] - rec["w_2"] for rec in trajectory_records}
+    avg_t_values = sorted(wdiff_by_t)
+
+    with open(wdiff_avg_csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["t", "mean_w_diff", "std_w_diff", "count"])
+        for t_val in avg_t_values:
+            writer.writerow([t_val, wdiff_by_t[t_val], 0.0, 1])
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(avg_t_values, [wdiff_by_t[tv] for tv in avg_t_values], label=f"{opt_name} w1-w2")
+    plt.xlabel("Iterations")
+    plt.ylabel("w1 - w2")
+    plt.title(f"w1-w2 trajectory ({opt_name}, lr={learning_rate})")
+    plt.tight_layout()
+    plt.legend()
+    plt.savefig(wdiff_avg_png_path, dpi=200)
+    plt.close()
+
+    # ---- hit-time histogram CSV + PNG (only if the threshold was reached) ----
+    if t_hit >= 0:
+        plt.figure(figsize=(8, 5))
+        plt.hist([t_hit], bins=1)
+        plt.title("Hit time (single run)")
+        plt.xlabel("Iterations")
+        plt.ylabel("Count")
+        plt.tight_layout()
+        plt.savefig(hit_time_png_path, dpi=200)
+        plt.close()
+
+        with open(hit_time_csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["bin_left", "bin_right", "count"])
+            writer.writerow([t_hit, t_hit + 1, 1])
+
+    # ---- Adam bias-abs CSV + PNG ----
+    if opt_name == "ADAM":
+        plt.figure(figsize=(8, 5))
+        plt.bar([0], [final_bias_abs], width=0.5)
+        plt.title(f"|b2-b1| at convergence (ADAM, lr={learning_rate})")
+        plt.xlabel("|b2 - b1|")
+        plt.ylabel("Count")
+        plt.tight_layout()
+        plt.savefig(adam_bias_png_path, dpi=200)
+        plt.close()
+
+        with open(adam_bias_csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["bin_left", "bin_right", "count"])
+            writer.writerow([max(0.0, final_bias_abs - 1e-9), final_bias_abs + 1e-9, 1])
+
+    # ---- summary TXT ----
+    with open(summary_txt_path, "w") as f:
+        f.write("=== Experiment 1D (from disk ratio) summary ===\n")
+        f.write(f"min_dist_pos={min_dist_pos}, min_dist_neg={min_dist_neg}\n")
+        f.write(f"ratio={ratio}, x_star={x_star}\n")
+        f.write(f"net_val_pos={net_val_pos}, net_val_neg={net_val_neg}\n")
+        f.write(f"optimizer={opt_name}, learning_rate={learning_rate}\n")
+        f.write(f"loss_threshold={loss_threshold}, tol={tol}\n")
+        f.write(f"max_iterations={max_iterations}\n\n")
+        f.write(f"num_runs=1\n")
+        f.write(f"stop_reason={stop_reason}\n")
+        f.write(f"t_last={t}\n")
+        f.write(f"t_hit={t_hit}\n\n")
+        f.write(f"trajectory_csv={trajectory_csv_path}\n")
+        f.write(f"wdiff_avg_csv={wdiff_avg_csv_path}\n")
+        if t_hit >= 0:
+            f.write(f"hit_time_csv={hit_time_csv_path}\n")
+        if opt_name == "ADAM":
+            f.write(f"adam_bias_hist_csv={adam_bias_csv_path}\n")
+
+    print(
+        f"  stop_reason={stop_reason}, t_hit={t_hit}, "
+        f"trajectory_rows={len(trajectory_records)}"
+    )
+    print(
+        f"  Wrote: {runs_csv_path}, {trajectory_csv_path}, "
+        f"{wdiff_avg_csv_path}, {summary_txt_path}"
+    )
+
+    return {
+        "min_dist_pos": min_dist_pos,
+        "min_dist_neg": min_dist_neg,
+        "ratio": ratio,
+        "x_star": x_star,
+        "init_w1": w1_0,
+        "init_b1": b1_0,
+        "init_w2": w2_0,
+        "init_b2": b2_0,
+        "final_w1": w1_T,
+        "final_b1": b1_T,
+        "final_w2": w2_T,
+        "final_b2": b2_T,
+        "stop_reason": stop_reason,
+        "t_hit": t_hit,
+    }
