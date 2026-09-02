@@ -1,127 +1,138 @@
-# Thesis Experiments: GD Convergence and Adversarial Robustness
 
-This repository contains experiments for analyzing gradient descent (GD) convergence and adversarial robustness in neural networks.
+# Thesis Experiments — Gradient Descent Dynamics
 
-## Setup
+This repository contains code for running a controlled gradient descent experiment on a 1D two-neuron ReLU network.
 
-Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+Currently, the CLI runs **Experiment 5f** only.
 
-## Experiments
+---
 
-The code implements four main experiments:
+# Model
 
-### 1. Arbitrary Neurons and Initialization
-Simulates GD on neural networks with an arbitrary number of neurons and various initialization schemes.
+We study a 1D ReLU network with two neurons:
 
-### 2. Decision Boundary Count
-Computes the number of x-axis intersections (decision boundaries) as a function of iteration t.
+[
+f(x) = v_1 \mathrm{ReLU}(w_1 x + b_1) + v_2 \mathrm{ReLU}(w_2 x + b_2)
+]
 
-### 3. Robust Case
-Tests the robust case where the training set is moved closer to the origin.
+For this experiment:
 
-### 4. Non-Symmetric Data
-Allows simulations over non-symmetric datasets.
+* Number of neurons: `k = 2`
+* Output weights: `v = [1, -1]` (fixed during training)
+* Initialization:
 
-## Usage
+  * ( w_1, w_2 \sim \mathcal{N}(0,2) )
+  * ( b_1 = b_2 = 0 )
 
-Run all experiments:
+Training is performed using full-batch gradient descent with **exponential loss**:
+
+[
+L = \frac{1}{n} \sum_i \exp(-y_i f(x_i))
+]
+
+---
+
+# Experiment — Description
+
+Each run:
+
+1. Initializes the network randomly.
+2. Runs gradient descent.
+3. Stops when one of the following occurs:
+
+### Hit Condition
+
+Both:
+
+* ( |w_1 + b_1 + w_2 - b_2| < \text{tol} )
+* Loss < `loss_threshold`
+
+### Loss Abort
+
+If after 10,000 iterations the loss is still above the threshold.
+
+### Max Iterations
+
+If `max_iterations` is reached.
+
+The experiment records:
+
+* Hit times
+* Final parameters
+* Loss values
+* A geometric metric:
+  [
+  \min(|b_2 - b_1|,\ |w_1^{(0)} + w_2^{(0)}|/2)
+  ]
+
+---
+
+# How to Run
+
+From the project root directory:
+
 ```bash
 python main.py
 ```
 
-Or import and run individual experiments:
-```python
-from main import *
+By default this runs:
 
-# Experiment 1: Arbitrary neurons
-experiment_1_arbitrary_neurons(k=5, num_iterations=500, learning_rate=0.01)
+* `num_runs = 10_000`
+* `learning_rate = 0.01`
+* `max_iterations = 10_000_000`
+* `seed = 42`
 
-# Experiment 2: Boundary count
-experiment_2_boundary_count(k=2, num_iterations=1000, learning_rate=0.01)
+---
 
-# Experiment 3: Robust case
-experiment_3_robust_case(k=2, num_iterations=1000, shifts=[0.0, -0.3, -0.5, -0.7])
+# CLI Arguments
 
-# Experiment 4: Non-symmetric data
-experiment_4_non_symmetric(k=2, num_iterations=1000, learning_rate=0.01)
-```
+You can override parameters:
 
-## Controlling Initial Weights Theta
-
-You have full control over the initial parameter vector Theta = [w_1, ..., w_k, b_1, ..., b_k, v_1, ..., v_k]:
-
-### 1. Binary initialization (w_j = +1/-1)
-```python
-from main import initialize_network, print_initial_params, get_theta_vector
-
-# Initialize w_j randomly to +1/-1
-params = initialize_network(k=5, init_type="binary", v_binary=True)
-print_initial_params(params)  # Shows w, b, v, and Theta vector
-```
-
-### 2. Explicit w_binary list
-```python
-# Explicitly set w_j = [1, -1, 1, -1, 1]
-params = initialize_network(k=5, w_binary=[1, -1, 1, -1, 1], v_binary=True)
-```
-
-### 3. Fully custom initialization
-```python
-import numpy as np
-
-# Specify all parameters explicitly
-w_custom = np.array([1.0, -1.0, 0.5, -0.5])
-b_custom = np.array([0.1, -0.1, 0.2, -0.2])
-v_custom = np.array([1.0, -1.0, 1.0, -1.0])
-params = initialize_network(k=4, w_init=w_custom, b_init=b_custom, v_init=v_custom)
-```
-
-### 4. Get Theta vector
-```python
-# Get the parameter vector Theta
-theta = get_theta_vector(params)
-print(f"Theta = {theta}")
-print(f"||Theta|| = {np.linalg.norm(theta)}")
-```
-
-### 5. Available initialization types
-- `"random"`: Random normal initialization (default)
-- `"thesis"`: Thesis-specific initialization (k=2 only)
-- `"symmetric"`: Small symmetric initialization
-- `"binary"`: Initialize w_j to +1/-1 randomly
-- `"custom"`: Use explicitly provided arrays
-
-See `example_init.py` for complete examples:
 ```bash
-python example_init.py
+python main.py \
+  --runs 10000 \
+  --lr 0.05 \
+  --max-iterations 1000000 \
+  --seed 123
 ```
 
-## Network Architecture
+### Available Arguments
 
-The neural network has the form:
+| Argument                    | Description                                  |
+| --------------------------- | -------------------------------------------- |
+| `--runs`                    | Number of independent random initializations |
+| `--lr` or `--learning-rate` | Learning rate                                |
+| `--max-iterations`          | Maximum GD iterations                        |
+| `--seed` or `-s`            | Random seed                                  |
+
+---
+
+# Output Files
+
+Running the experiment produces:
+
+* `experiment_5f_runs.csv` — detailed results per run
+* `experiment_5f_summary.txt` — overall statistics
+* `experiment_5f_hit_time_hist.png`
+* `experiment_5f_hit_time_hist.csv`
+* `experiment_5f_metric_hist.png`
+* `experiment_5f_metric_hist.csv`
+
+---
+
+# Project Structure
+
 ```
-Phi(x) = sum_j v_j * ReLU(w_j * x + b_j)
+core.py         # Network, gradients, GD
+experiments.py  # Experiment 5f implementation
+datasets.py     # Dataset generation
+init_utils.py   # Parameter initialization
+cli.py          # Command-line interface
+main.py         # Entry point
 ```
 
-where:
-- `k` is the number of neurons
-- `w_j` are input weights
-- `b_j` are biases
-- `v_j` are output weights
+---
 
-## Loss Function
+# Notes
 
-The exponential loss function is used:
-```
-L(theta) = (1/n) * sum_i exp(-y_i * Phi(theta; x_i))
-```
-
-## Gradient Descent
-
-Parameters are updated via:
-```
-theta^(t+1) = theta^(t) - eta * grad_theta L(theta^(t))
-```
+* Output weights `v` are fixed.
